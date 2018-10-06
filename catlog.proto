@@ -1,0 +1,60 @@
+// The raw binary data encoded into the SANs
+message CertificateData {
+    // The data represents either...
+    oneof certificate_data {
+        // A chunk of a binary file
+        DataChunk data_chunk = 1;
+        // A chunk of a box
+        BoxChunk box_chunk = 2;
+    }
+}
+
+// A reference to a (pre-)certificate in CT logs
+message LogEntryReference {
+    // The SHA-256 hash of the log's public key, calculated over
+    // the DER encoding of the key represented as SubjectPublicKeyInfo.
+    // This is required.
+    bytes log_id = 1;
+    // The SHA-256 leaf-hash of the certificate in the CT log.
+    bytes leaf_hash = 2;
+    // Entry id of the certificate in the log
+    uint64 entry_id = 3;
+}
+
+// A reference to a (pre-)certificate. All fields are optional, but at least 1 must be included
+// so that the reference can be resolved.
+message CertificateReference {
+    // SHA-256 fingerprint of the (pre-)certificate
+    bytes fingerprint_sha256 = 1;
+    // Reference to entry in
+    repeated LogEntryReference log_entry = 2;
+}
+
+// A chunk of a raw binary file
+message DataChunk {
+    // The leaf-hash of the previous chunk of this file. By spec,
+    // a leaf-hash is a SHA256 hash, so this will always be 32
+    // bytes. If empty, this is the first chunk.
+    CertificateReference previous_chunk = 1;
+    // The actual binary data of this chunk.
+    bytes chunk = 2;
+}
+
+// A chunk of a box definition
+message BoxChunk {
+    // The leaf-hash of the previous chunk defining this box. By spec,
+    // a leaf-hash is a SHA256 hash, so this will always be 32 bytes.
+    // If empty, this is the first chunk.
+    CertificateReference previous_chunk = 1;
+    // Files present in the box
+    repeated FileData file_data = 2;
+}
+
+// A definition of a file in a box
+message FileData {
+    // The name of the file.
+    string name = 1;
+    // A reference to the certificate which represents the last chunk of
+    // of the file.
+    CertificateReference certificate_reference = 2;
+}
