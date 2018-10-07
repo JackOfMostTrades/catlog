@@ -1,5 +1,6 @@
 import base64
 import math
+from typing import List
 
 # Each label can be 63 characters long
 # The total length (including all dots) can be 253 characters.
@@ -9,7 +10,7 @@ MAX_DNS_LABEL_LEN = 63
 MAX_SANS_PER_CERT = 100
 
 
-def get_bytes_per_san(dns_suffix):
+def get_bytes_per_san(dns_suffix: str) -> int:
     num_dots = math.floor(MAX_DNS_NAME_LEN - len(dns_suffix) - 1) / MAX_DNS_LABEL_LEN
     chars_per_san = MAX_DNS_NAME_LEN - len(dns_suffix) - 1 - num_dots
     # base32 encoding has a 5/8 encoding ratio, minus 1 byte reserved as an ordinal
@@ -17,11 +18,11 @@ def get_bytes_per_san(dns_suffix):
     return bytes_per_san
 
 
-def get_bytes_per_cert(dns_suffix):
+def get_bytes_per_cert(dns_suffix: str) -> int:
     return get_bytes_per_san(dns_suffix) * (MAX_SANS_PER_CERT - 1)
 
 
-def data_to_domains(raw_data, dns_suffix):
+def data_to_domains(raw_data: bytes, dns_suffix: str) -> List[str]:
     bytes_per_san = get_bytes_per_san(dns_suffix)
     bytes_per_cert = get_bytes_per_cert(dns_suffix)
 
@@ -41,7 +42,7 @@ def data_to_domains(raw_data, dns_suffix):
     return sans
 
 
-def domains_to_data(domains, dns_suffix):
+def domains_to_data(domains: List[str], dns_suffix: str) -> bytes:
     datas = []
     for san in domains:
         if san == dns_suffix:

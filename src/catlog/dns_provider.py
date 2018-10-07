@@ -7,10 +7,10 @@ class CatlogResolver(BaseResolver):
         self.txtMap = {}
         self.udp_server = None
 
-    def setTxt(self, domain, value):
+    def setTxt(self, domain: str, value: str) -> None:
         self.txtMap[domain.lower()] = value
 
-    def clearTxt(self, domain):
+    def clearTxt(self, domain: str) -> None:
         del self.txtMap[domain.lower()]
 
     def resolve(self, request, handler):
