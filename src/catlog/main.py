@@ -1,13 +1,15 @@
-import sys
-import os.path
-import urllib.request
-import json
 import base64
-import asn1crypto.x509
-import asn1crypto.core
 import hashlib
+import json
+import os.path
+import sys
+import urllib.request
 
-import ctl_parser_structures
+import asn1crypto.core
+import asn1crypto.x509
+
+from . import ctl_parser_structures
+
 
 def get_leaf_by_entry_id(ct_log, entry_id):
     entries = json.loads(urllib.request.urlopen(
@@ -53,7 +55,6 @@ def cert_to_leaf_hashes(certBytes, issuerCertBytes):
     issuer = asn1crypto.x509.Certificate.load(issuerCertBytes)
     cert = asn1crypto.x509.Certificate.load(certBytes)
 
-    #issuer_key_hash = issuer["tbs_certificate"]["subject_public_key_info"].sha256
     issuer_key_hash = hashlib.sha256(issuer["tbs_certificate"]["subject_public_key_info"].dump()).digest()
     tbsCert = cert["tbs_certificate"]
     scts = []
@@ -91,20 +92,27 @@ def push(cliArgs):
     path = cliArgs[0]
     if not os.path.isfile(path):
         raise Exception("File not found: " + path)
+    with open(path, "rb") as f:
+        file_data = f.read()
+    push_data(f)
+
+
+def push_data(data):
     tbsCert = get_leaf_by_hash("https://ct.googleapis.com/icarus", "0Jw8rUAEGgbFuTb196OBfbjAPGlW80KupXV4idizeFA=")
     #tbsCert = print(get_leaf_by_hash( "https://ct.googleapis.com/logs/argon2018", "IFiyQRhyGeLTKvDp9t8RUSf2Dv5KT1DX1XR6Mx0sMXU="))
 
     print(get_subject_cn(tbsCert))
     print(get_sans(tbsCert))
 
-
-def main():
-    if sys.argv[1] == 'push':
-        push(sys.argv[2:])
-    else:
-        raise Exception("Unsupported subcommand: " + sys.argv[1])
-
-if __name__ == "__main__":
-    #main()
     cert_to_leaf_hashes(open("/home/ihaken/Downloads/leaf.crt", "rb").read(),
                         open("/home/ihaken/Downloads/issuer.crt", "rb").read())
+
+
+def main(args):
+    if args[0] == 'push':
+        push(args[1:])
+    else:
+        raise Exception("Unsupported subcommand: " + args[0])
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
