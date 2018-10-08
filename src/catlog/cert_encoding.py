@@ -5,6 +5,7 @@ import math
 import os.path
 import urllib
 from typing import List, Tuple, Optional
+from urllib.error import HTTPError
 
 import asn1crypto.x509
 from asn1crypto import pem
@@ -52,14 +53,20 @@ def data_to_domains(raw_data: bytes, dns_suffix: str) -> List[str]:
     return sans
 
 
+def add_b32_padding(d: str) -> str:
+    padding = "=" * ((8 - (len(d) % 8)) % 8)
+    return d + padding
+
+
 def domains_to_data(domains: List[str], dns_suffix: str) -> bytes:
     datas = []
     for san in domains:
         if san == dns_suffix:
             continue
-        encoded = san.rstrip(dns_suffix).replace('.', '')
-        encoded += "=" * ((4 - (len(encoded) % 4)) % 4)
-        data = base64.b32decode(encoded)
+        if not san.endswith(dns_suffix):
+            raise Exception("Unexpected SAN in cert: " + san)
+        encoded = san[0:-len(dns_suffix)].replace('.', '')
+        data = base64.b32decode(add_b32_padding(encoded.upper()))
         datas.append({"ordinal": data[0], "data": data[1:]})
     datas.sort(key=lambda x: x["ordinal"])
     result = bytes()
@@ -115,23 +122,28 @@ def cert_to_leaf_hashes(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[
     return leaf_hashes
 
 
-def get_leaf_by_hash(ct_log, hash):
+def get_leaf_by_hash(ct_log: str, hash: str) -> Optional[asn1crypto.x509.TbsCertificate]:
     sth = json.loads(urllib.request.urlopen("{}ct/v1/get-sth".format(ct_log)).read())
     tree_size = sth["tree_size"]
     try:
         proof = json.loads(urllib.request.urlopen(
-            "{}ct/v1/get-proof-by-hash?hash={}&tree_size={}".format(ct_log, hash, tree_size)).read())
-    except:
-        return None
+            "{}ct/v1/get-proof-by-hash?{}".format(ct_log, urllib.parse.urlencode({
+                "hash": hash,
+                "tree_size": tree_size
+            }))).read())
+    except HTTPError as e:
+        if e.code == 404:
+            return None
+        raise e
     leaf_index = proof["leaf_index"]
     return get_leaf_by_entry_id(ct_log, leaf_index)
 
 
-def get_subject_cn(tbsCert):
+def get_subject_cn(tbsCert: asn1crypto.x509.TbsCertificate):
     return tbsCert["subject"].native["common_name"]
 
 
-def get_sans(tbsCert):
+def get_sans(tbsCert: asn1crypto.x509.TbsCertificate):
     sans = []
     for ext in tbsCert["extensions"]:
         if ext["extn_id"].native == "subject_alt_name":
@@ -151,9 +163,13 @@ def lookup_ct_log_by_id(log_id: bytes) -> Optional[str]:
     return None
 
 
-def get_leaf_by_entry_id(ct_log, entry_id):
+def get_leaf_by_entry_id(ct_log: str, entry_id: str) -> asn1crypto.x509.TbsCertificate:
     entries = json.loads(urllib.request.urlopen(
-        "{}/ct/v1/get-entries?start={}&end={}".format(ct_log, entry_id, entry_id)).read())
+        "{}ct/v1/get-entries?{}".format(ct_log,
+                                        urllib.parse.urlencode({
+                                            "start": entry_id,
+                                            "end": entry_id
+                                        }))).read())
     leaf = base64.b64decode(entries["entries"][0]["leaf_input"])
 
     leaf_cert = ctl_parser_structures.MerkleTreeLeaf.parse(leaf).TimestampedEntry

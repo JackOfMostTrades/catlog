@@ -43,6 +43,8 @@ def push_data(data: bytes) -> None:
             if len(chunk_data) <= bytes_per_cert:
                 break
             chunk_size -= 1
+        if chunk_size == 0:
+            raise Exception("Unable to find any acceptable encoding size!")
 
         # Actually mint the cert...
         cert, issuer = client.mint_cert(domain, chunk_data)
@@ -73,15 +75,24 @@ def pull_data(ct_log_id: bytes, leaf_hash: bytes) -> bytes:
         )]
     )
     data = bytes()
-    while previous_chunk_ref is not None:
-        log_entry = previous_chunk_ref.log_entry[0]
-        ct_log_id = log_entry.log_id
-        leaf_hash = log_entry.leaf_hash
-        ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
+    while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
+        ct_log_url = None
+        for log_entry in previous_chunk_ref.log_entry:
+            ct_log_id = log_entry.log_id
+            leaf_hash = log_entry.leaf_hash
+            ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
+            if ct_log_url is not None:
+                break
+
+        if ct_log_url is None:
+            raise Exception("Unable to resolve any CT logs from log IDs")
+
         tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
         encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
                                                 cert_encoding.get_subject_cn(tbsCert))
-        data_chunk = catlog_pb2.CertificateData.ParseFromString(encoded).data_chunk
+        cert_data = catlog_pb2.CertificateData()
+        cert_data.ParseFromString(encoded)
+        data_chunk = cert_data.data_chunk
         previous_chunk_ref = data_chunk.previous_chunk
         data = data_chunk.chunk + data
 
