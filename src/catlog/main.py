@@ -417,6 +417,40 @@ def pull_data(log_entries: List[Tuple[bytes, bytes]]) -> bytes:
 
     return data
 
+
+def add(cliArgs):
+    if len(cliArgs) != 2:
+        raise Exception("catlog add command expects exactly two arguments")
+    filename = cliArgs[0]
+    log_ref = parse_log_ref(cliArgs[1])
+    if log_ref is None:
+        raise Exception("Second argument to `catlog add` must be a log ref: " + cliArgs[1])
+
+    bucket_root = discover_bucket_root()
+    if bucket_root is None:
+        raise Exception("`catlog add` can only be run in a bucket!")
+    bucket_db = BucketDb(bucket_root)
+
+    try:
+        # Sanity check that the ref is something we can fetch
+        ct_log_url = cert_encoding.lookup_ct_log_by_id(log_ref[0])
+        if ct_log_url is None:
+            raise Exception("Unable to resolve CT log from log ID")
+        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref[1]).decode('utf-8'))
+        if tbsCert is None:
+            raise Exception("Unable to lookup log ref: " + cliArgs[1])
+
+        # Add uploaded but uncommitted status for the filename to the bucket
+        file_status = FileStatus(filename=filename)
+        file_status.upload_complete = True
+        file_status.committed = False
+        file_status.log_entries = [log_ref]
+
+        bucket_db.set_file_status(file_status)
+    finally:
+        bucket_db.close()
+
+
 def main(args):
     if args[0] == 'push':
         push(args[1:])
@@ -432,6 +466,8 @@ def main(args):
         clone(args[1:])
     elif args[0] == 'commit':
         commit(args[1:])
+    elif args[0] == 'add':
+        add(args[1:])
     else:
         raise Exception("Unsupported subcommand: " + args[0])
 
