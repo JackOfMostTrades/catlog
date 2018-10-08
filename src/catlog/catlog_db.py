@@ -3,7 +3,7 @@ import os
 import os.path
 import sqlite3
 import time
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 home = os.path.expanduser("~")
 
@@ -53,16 +53,47 @@ class CatlogDb:
                          (account_id, registration_json, key_json,))
         self._db.commit()
 
+    def add_domain(self, domain: str) -> None:
+        row = self._db.execute("SELECT id FROM domains WHERE domain=?", (domain,))
+        if row is None:
+            self._db.execute("INSERT INTO domains (domain,tld,disabled) VALUES(?,?,0)", (domain, domain,))
+        else:
+            self._db.execute("UPDATE domain SET disabled=0 WHERE id=?", (row[0],))
+        self._db.commit()
+
+    def disable_domain(self, domain: str) -> None:
+        self._db.execute("UPDATE domains SET disabled=1 WHERE domain=?", (domain,))
+        self._db.commit()
+
+    def get_domains(self) -> Dict[str, Tuple[int, int]]:
+        domains = {}
+        one_week_ago = int(time.time()) - 7 * 24 * 60 * 60
+        for staging in [0, 1]:
+            for row in self._db.execute(
+                    "SELECT D.domain,COUNT(*) FROM certificate_log L INNER JOIN domains D ON D.id=L.domain_id WHERE L.staging=? AND L.date > ? GROUP BY D.id",
+                    (staging, one_week_ago,)):
+                name = row[0]
+                if name in domains:
+                    prior = domains[name]
+                else:
+                    prior = (0, 0)
+                if staging == 0:
+                    res = (row[1], prior[1])
+                else:
+                    res = (prior[0], row[1])
+                domains[name] = res
+        return domains
+
     def pick_domain(self, staging: bool) -> Domain:
         one_week_ago = int(time.time()) - 7 * 24 * 60 * 60
         # If there is any domain available where we have not minted any certs, use it
         row = self._db.execute(
-            "SELECT id,domain,tld FROM domains WHERE id NOT IN (SELECT domain_id FROM certificate_log WHERE staging=? AND date > ?)",
+            "SELECT id,domain,tld FROM domains WHERE disabled=0 AND id NOT IN (SELECT domain_id FROM certificate_log WHERE staging=? AND date > ?)",
             (1 if staging else 0, one_week_ago,)).fetchone()
         if row is None:
             # Otherwise, look for the least-used domain
             row = self._db.execute(
-                "SELECT domain_id FROM certificate_log WHERE staging=? AND date > ? GROUP BY domain_id ORDER BY COUNT(*) DESC LIMIT 1",
+                "SELECT D.id FROM certificate_log L INNER JOIN domains D ON D.id=L.domain_id WHERE D.disabled=0 AND L.staging=? AND L.date > ? GROUP BY D.id ORDER BY COUNT(*) DESC LIMIT 1",
                 (1 if staging else 0, one_week_ago,)).fetchone()
             row = self._db.execute("SELECT id,domain,tld FROM domains WHERE id=?", (row[0],)).fetchone()
         return Domain(id=row[0], domain=row[1], tld=row[2])

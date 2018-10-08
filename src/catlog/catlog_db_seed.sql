@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS domains (
   -- the same as `domain`, but this might not be the case if you want to put all certs under
   -- foo.mytld.com and bar.mytld.com, but both of these would count against the `mytld.com`
   -- rate limit
-  tld VARCHAR(255) NOT NULL
+  tld VARCHAR(255) NOT NULL,
+  -- Indicates that this domain has been disabled and should not be
+  -- used for minting additional certificates
+  disabled INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS domains_domain_idx ON domains (domain);
 
