@@ -1,9 +1,9 @@
-CREATE TABLE IF NOT EXISTS bucket_config (
+CREATE TABLE IF NOT EXISTS box_config (
   key TEXT NOT NULL PRIMARY KEY,
   value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS bucket_ct_entry (
+CREATE TABLE IF NOT EXISTS box_ct_entry (
   log_id VARCHAR(255) NOT NULL,
   leaf_hash VARCHAR(255) NOT NULL
 );

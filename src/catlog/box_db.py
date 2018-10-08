@@ -5,13 +5,13 @@ import sqlite3
 from typing import List, Optional, Tuple
 
 
-def discover_bucket_root() -> Optional[str]:
+def discover_box_root() -> Optional[str]:
     dir = os.getcwd()
     while dir != "/":
-        bucket_root = os.path.join(dir, ".catlog")
-        bucket_db = os.path.join(bucket_root, "bucket.db")
-        if os.path.isfile(bucket_db):
-            return bucket_root
+        box_root = os.path.join(dir, ".catlog")
+        box_db = os.path.join(box_root, "box.db")
+        if os.path.isfile(box_db):
+            return box_root
         dir = os.path.dirname(dir)
     return None
 
@@ -29,17 +29,17 @@ class FileStatus:
         self.log_entries = []
 
 
-class BucketDb:
-    def __init__(self, bucket_root):
-        bucket_db = os.path.join(bucket_root, "bucket.db")
-        if not os.path.isfile(bucket_db):
-            raise Exception("Invalid bucket root: " + bucket_root)
-        self._db = sqlite3.connect(bucket_db)
+class BoxDb:
+    def __init__(self, box_root):
+        box_db = os.path.join(box_root, "box.db")
+        if not os.path.isfile(box_db):
+            raise Exception("Invalid box root: " + box_root)
+        self._db = sqlite3.connect(box_db)
         self.initdb()
 
     def initdb(self):
         seed_path = os.path.join(
-            os.path.dirname(os.path.realpath(__file__)), "bucket_db_seed.sql")
+            os.path.dirname(os.path.realpath(__file__)), "box_db_seed.sql")
         with open(seed_path, "r") as f:
             seed_sql = f.read()
         self._db.executescript(seed_sql)
@@ -48,37 +48,37 @@ class BucketDb:
         self._db.close()
 
     def get_config(self, key: str) -> Optional[str]:
-        row = self._db.execute("SELECT value FROM bucket_config WHERE key=?", (key,)).fetchone()
+        row = self._db.execute("SELECT value FROM box_config WHERE key=?", (key,)).fetchone()
         if row is None:
             return None
         return row[0]
 
     def set_config(self, key: str, value: str) -> None:
-        self._db.execute("UPDATE bucket_config SET value=? WHERE key=?", (value, key,))
+        self._db.execute("UPDATE box_config SET value=? WHERE key=?", (value, key,))
         self._db.commit()
 
-    def get_bucket_fingerprint_sha256(self) -> Optional[bytes]:
+    def get_box_fingerprint_sha256(self) -> Optional[bytes]:
         val = self.get_config('fingerprint_sha256')
         if val is None:
             return None
         return base64.b64decode(val)
 
-    def get_bucket_refs(self) -> List[Tuple[bytes, bytes]]:
+    def get_box_refs(self) -> List[Tuple[bytes, bytes]]:
         refs = []
-        for row in self._db.execute("SELECT log_id,leaf_hosh FROM bucket_ct_entry"):
+        for row in self._db.execute("SELECT log_id,leaf_hosh FROM box_ct_entry"):
             refs.append((
                 base64.b64decode(row[0]),
                 base64.b64decode(row[1])
             ))
         return refs
 
-    def set_bucket_refs(self, fingerprint_sha256: bytes, log_refs: List[Tuple[bytes, bytes]]) -> None:
-        self._db.execute("DELETE FROM bucket_config WHERE key='fingerprint_sha256'")
-        self._db.execute("INSERT INTO bucket_config (key,value) VALUES('fingerprint_sha256',?)",
+    def set_box_refs(self, fingerprint_sha256: bytes, log_refs: List[Tuple[bytes, bytes]]) -> None:
+        self._db.execute("DELETE FROM box_config WHERE key='fingerprint_sha256'")
+        self._db.execute("INSERT INTO box_config (key,value) VALUES('fingerprint_sha256',?)",
                          (base64.b64encode(fingerprint_sha256).decode('utf-8'),))
-        self._db.execute("DELETE FROM bucket_ct_entry")
+        self._db.execute("DELETE FROM box_ct_entry")
         for log_ref in log_refs:
-            self._db.execute("INSERT INTO bucket_ct_entry (log_id,leaf_hash) VALUES(?,?)", (
+            self._db.execute("INSERT INTO box_ct_entry (log_id,leaf_hash) VALUES(?,?)", (
                 base64.b64encode(log_ref[0]).decode('utf-8'),
                 base64.b64encode(log_ref[1]).decode('utf-8'),
             ))

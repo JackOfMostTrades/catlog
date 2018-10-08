@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 from . import catlog_pb2
 from . import cert_encoding
 from . import le_client
-from .bucket_db import discover_bucket_root, BucketDb, FileStatus
+from .box_db import discover_box_root, BoxDb, FileStatus
 from .catlog_db import CatlogDb
 from .config_cmd import config_cmd
 
@@ -16,15 +16,15 @@ from .config_cmd import config_cmd
 def init(cliArgs):
     if len(cliArgs) != 0:
         raise Exception("catlog init doesn't take arguments")
-    bucket_root = discover_bucket_root()
-    if bucket_root is not None:
-        raise Exception("It looks like you're already working under a bucket: " + bucket_root)
-    bucket_root = os.path.join(os.getcwd(), ".catlog")
-    if not os.path.isdir(bucket_root):
-        os.mkdir(bucket_root, 0o700)
-    # Instantiate an empty bucket db
-    bucket_db = BucketDb(bucket_root)
-    bucket_db.close()
+    box_root = discover_box_root()
+    if box_root is not None:
+        raise Exception("It looks like you're already working under a box: " + box_root)
+    box_root = os.path.join(os.getcwd(), ".catlog")
+    if not os.path.isdir(box_root):
+        os.mkdir(box_root, 0o700)
+    # Instantiate an empty box db
+    box_db = BoxDb(box_root)
+    box_db.close()
 
 
 def push(cliArgs):
@@ -34,35 +34,35 @@ def push(cliArgs):
     if not os.path.isfile(path):
         raise Exception("File not found: " + path)
 
-    # Manage the file status using the bucket db
-    bucket_root = discover_bucket_root()
-    if bucket_root is None:
-        raise Exception("Must be working in a bucket to push files. Perhaps you need to run `catlog init`?")
-    bucket_db = BucketDb(bucket_root)
+    # Manage the file status using the box db
+    box_root = discover_box_root()
+    if box_root is None:
+        raise Exception("Must be working in a box to push files. Perhaps you need to run `catlog init`?")
+    box_db = BoxDb(box_root)
     try:
-        relpath = os.path.relpath(path, bucket_root)
-        file_status = bucket_db.get_file_status(relpath)
+        relpath = os.path.relpath(path, box_root)
+        file_status = box_db.get_file_status(relpath)
         if file_status is None:
             file_status = FileStatus(filename=relpath)
 
         with open(path, "rb") as f:
             file_data = f.read()
-        push_data(file_data, bucket_db, file_status)
+        push_data(file_data, box_db, file_status)
     finally:
-        bucket_db.close()
+        box_db.close()
 
 
 def commit(cliArgs):
     if len(cliArgs) != 0:
         raise Exception("catlog commit doesn't take any arguments")
 
-    bucket_root = discover_bucket_root()
-    if bucket_root is None:
-        raise Exception("No bucket found. `catlog commit` can only be run from within a bucket!")
-    bucket_db = BucketDb(bucket_root)
+    box_root = discover_box_root()
+    if box_root is None:
+        raise Exception("No box found. `catlog commit` can only be run from within a box!")
+    box_db = BoxDb(box_root)
     catlog_db = CatlogDb()
     try:
-        files_to_commit = bucket_db.get_all_files_for_commit()
+        files_to_commit = box_db.get_all_files_for_commit()
         if len(files_to_commit) == 0:
             print("Up to date!")
             return
@@ -84,8 +84,8 @@ def commit(cliArgs):
         client = le_client.LeClient(catlog_db)
         previous_chunk_ref = None
 
-        fingerprint_sha256 = bucket_db.get_bucket_fingerprint_sha256()
-        leaf_hashes = bucket_db.get_bucket_refs()
+        fingerprint_sha256 = box_db.get_box_fingerprint_sha256()
+        leaf_hashes = box_db.get_box_refs()
         if (fingerprint_sha256 is not None) or len(leaf_hashes) > 0:
             log_entry_refs = []
             for leaf_hash in leaf_hashes:
@@ -120,7 +120,7 @@ def commit(cliArgs):
                 raise Exception("Unable to find any acceptable encoding size!")
 
             # Actually mint the cert...
-            print("Minting a certificate that commits {} new files to the bucket...".format(num_files))
+            print("Minting a certificate that commits {} new files to the box...".format(num_files))
             cert, issuer = client.mint_cert(domain, chunk_data)
 
             # Build the previous chunk reference...
@@ -137,9 +137,9 @@ def commit(cliArgs):
                 log_entry=log_entry_refs
             )
 
-            # Update the bucket_db, marking the new bucket refs and committed files
-            bucket_db.mark_files_committed([x.name for x in file_data[:num_files]])
-            bucket_db.set_bucket_refs(fingerprint_sha256, leaf_hashes)
+            # Update the box_db, marking the new box refs and committed files
+            box_db.mark_files_committed([x.name for x in file_data[:num_files]])
+            box_db.set_box_refs(fingerprint_sha256, leaf_hashes)
 
             # Finally, reset file_data for next iteration
             file_data = file_data[num_files:]
@@ -147,7 +147,7 @@ def commit(cliArgs):
         return None
     finally:
         catlog_db.close()
-        bucket_db.close()
+        box_db.close()
 
 
 def clone(cliArgs):
@@ -157,15 +157,15 @@ def clone(cliArgs):
     if log_entry is None:
         raise Exception("`catlog clone` argument not a valid log reference: " + cliArgs[0])
 
-    bucket_root = discover_bucket_root()
-    if bucket_root is not None:
+    box_root = discover_box_root()
+    if box_root is not None:
         raise Exception(
-            "Already inside a bucket. `catlog clone` should be issued inside a directory you intend to use as the cloned bucket")
-    bucket_root = os.path.join(os.getcwd(), ".catlog")
-    if not os.path.isdir(bucket_root):
-        os.mkdir(bucket_root, 0o700)
+            "Already inside a box. `catlog clone` should be issued inside a directory you intend to use as the cloned box")
+    box_root = os.path.join(os.getcwd(), ".catlog")
+    if not os.path.isdir(box_root):
+        os.mkdir(box_root, 0o700)
 
-    bucket_db = BucketDb(bucket_root)
+    box_db = BoxDb(box_root)
     try:
         previous_chunk_ref = catlog_pb2.CertificateReference(
             log_entry=[(
@@ -204,26 +204,26 @@ def clone(cliArgs):
                     file_status.log_entries.append((
                         log_entry.log_id, log_entry.leaf_hash
                     ))
-                bucket_db.set_file_status(file_status)
+                box_db.set_file_status(file_status)
     finally:
-        bucket_db.close()
+        box_db.close()
 
 
 def status(cliArgs):
     if len(cliArgs) != 0:
         raise Exception("No arguments supported for catlog status command.")
 
-    bucket_root = discover_bucket_root()
-    if bucket_root is None:
-        raise Exception("Bucket not found. Perhaps you need to run `catlog init`?")
-    bucket_db = BucketDb(bucket_root)
+    box_root = discover_box_root()
+    if box_root is None:
+        raise Exception("Box not found. Perhaps you need to run `catlog init`?")
+    box_db = BoxDb(box_root)
     try:
         not_fetched = []
         fetched = []
         uncommitted = []
         partially_uploaded = []
-        for file in bucket_db.get_all_files():
-            full_path = os.path.join(bucket_root, file.filename)
+        for file in box_db.get_all_files():
+            full_path = os.path.join(box_root, file.filename)
             if not file.upload_complete:
                 partially_uploaded.append(file)
             elif not file.committed:
@@ -251,16 +251,16 @@ def status(cliArgs):
             for file in not_fetched:
                 print(file.filename)
 
-        # FIXME: We should look for and report on files under the bucket_root that are completely untracked.
+        # FIXME: We should look for and report on files under the box_root that are completely untracked.
     finally:
-        bucket_db.close()
+        box_db.close()
 
 
 def config(cliArgs):
     config_cmd(cliArgs)
 
 
-def push_data(data: bytes, bucket_db: Optional[BucketDb], file_status: Optional[FileStatus]) -> None:
+def push_data(data: bytes, box_db: Optional[BoxDb], file_status: Optional[FileStatus]) -> None:
     catlog_db = CatlogDb()
     client = le_client.LeClient(catlog_db)
     previous_chunk_ref = None
@@ -323,15 +323,15 @@ def push_data(data: bytes, bucket_db: Optional[BucketDb], file_status: Optional[
             log_entry=log_entry_refs
         )
 
-        # Update the bucket_db if working inside a bucket
-        if (bucket_db is not None) and (file_status is not None):
+        # Update the box_db if working inside a box
+        if (box_db is not None) and (file_status is not None):
             new_file_status = FileStatus(id=file_status.id, filename=file_status.filename)
             new_file_status.upload_offset = file_status.upload_offset + chunk_size
             new_file_status.upload_complete = (len(data) <= chunk_size)
             new_file_status.upload_fingerprint_sha256 = fingerprint_sha256
             new_file_status.committed = file_status.committed
             new_file_status.log_entries = leaf_hashes
-            bucket_db.set_file_status(new_file_status)
+            box_db.set_file_status(new_file_status)
             file_status = new_file_status
 
         data = data[chunk_size:]
@@ -361,15 +361,15 @@ def pull(cliArgs):
         full_path = os.path.abspath(cliArgs[0])
         if os.path.exists(full_path):
             raise Exception("Destination filename already exists: " + full_path)
-        bucket_root = discover_bucket_root()
-        if bucket_root is None:
-            raise Exception("Not working in a bucket; cannot pull file by path name.")
-        rel_path = os.path.relpath(full_path, bucket_root)
-        bucket_db = BucketDb(bucket_root)
-        file_status = bucket_db.get_file_status(rel_path)
-        bucket_db.close()
+        box_root = discover_box_root()
+        if box_root is None:
+            raise Exception("Not working in a box; cannot pull file by path name.")
+        rel_path = os.path.relpath(full_path, box_root)
+        box_db = BoxDb(box_root)
+        file_status = box_db.get_file_status(rel_path)
+        box_db.close()
         if file_status is None:
-            raise Exception("File path {} is unknown to bucket.".format(rel_path))
+            raise Exception("File path {} is unknown to box.".format(rel_path))
 
         log_entries = file_status.log_entries
         output_target = full_path
@@ -426,10 +426,10 @@ def add(cliArgs):
     if log_ref is None:
         raise Exception("Second argument to `catlog add` must be a log ref: " + cliArgs[1])
 
-    bucket_root = discover_bucket_root()
-    if bucket_root is None:
-        raise Exception("`catlog add` can only be run in a bucket!")
-    bucket_db = BucketDb(bucket_root)
+    box_root = discover_box_root()
+    if box_root is None:
+        raise Exception("`catlog add` can only be run in a box!")
+    box_db = BoxDb(box_root)
 
     try:
         # Sanity check that the ref is something we can fetch
@@ -440,15 +440,15 @@ def add(cliArgs):
         if tbsCert is None:
             raise Exception("Unable to lookup log ref: " + cliArgs[1])
 
-        # Add uploaded but uncommitted status for the filename to the bucket
+        # Add uploaded but uncommitted status for the filename to the box
         file_status = FileStatus(filename=filename)
         file_status.upload_complete = True
         file_status.committed = False
         file_status.log_entries = [log_ref]
 
-        bucket_db.set_file_status(file_status)
+        box_db.set_file_status(file_status)
     finally:
-        bucket_db.close()
+        box_db.close()
 
 
 def main(args):
