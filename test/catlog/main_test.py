@@ -1,5 +1,6 @@
 import base64
 import os.path
+import random
 from unittest import TestCase
 
 from . import main
@@ -7,7 +8,8 @@ from . import main
 
 class TestMain(TestCase):
     def test_push_small_data(self):
-        refs = main.push_data(b"Hello, World!" * 100)
+        input = bytes(random.getrandbits(8) for _ in range(1024))
+        refs = main.push_data(input)
         print(refs)
 
     def test_push_data(self):
