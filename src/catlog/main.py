@@ -218,6 +218,17 @@ def status(cliArgs):
         raise Exception("Box not found. Perhaps you need to run `catlog init`?")
     box_db = BoxDb(box_root)
     try:
+        refs = box_db.get_box_refs()
+        if len(refs) > 0:
+            print("Box log references")
+            print("------------------")
+            for ref in refs:
+                print("{}|{}".format(
+                    base64.b64encode(ref[0]).decode('utf-8'),
+                    base64.b64encode(ref[1]).decode('utf-8')
+                ))
+            print()
+
         not_fetched = []
         fetched = []
         uncommitted = []

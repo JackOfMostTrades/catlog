@@ -45,38 +45,6 @@ preferred way to reference files/boxes in CT logs since lookups can be done util
 However, a number of services (such as crt.sh) also support searching for certificates by public key, DNS name, and
 other terms. For convenience, catlog will also generally support references made by these alternate identifiers.
 
-# Commands
-As with the "git" cli, catlog has a number of subcommands.
-
-## `catlog init`
-Initializes the current working directory as a cat box. When operating in an initialized directory catlog keeps
-accounting of rate limits in effect, as well as the state of files in the box.
-
-## `catlog config`
-This subcommand is going to be used to configure various aspects of catlog's operation, such as:
-* Domains available for use
-* Web root used for ACME domain verifications
-* ...?
-
-## `catlog clone <ref>`
-Clones a box from the CT logs. This gets a listing of all files in the box, but does not actually download any of the
-files.
-
-## `catlog fetch <ref>`
-If ref is a leaf hash, public key, DNS name, etc, this will download the file from CT logs and write it to stdout. If
-the working directory is in a box, ref can be the filename of a Remote file, and it will be written to a file by the
-same name.
-
-## `catlog push <filename>`
-Uploads a local (untracked) file to the CT logs. This will output the merkle hash of the file. If in a box, the file
-will be staged. If a file is currently in a partially uploaded state, this will resume the upload.
-
-## `catlog commit`
-Pushes an update of current box to CT logs. All staged files will be come tracked.
-
-## `catlog status`
-Prints the current status of files in the box and any accounting information (e.g. how many commits remain in the week).
-
 # Accounting
 All catlog operations which need to push certificates to CT logs will be recorded. This will be utilized to determine
 whether or not a operation can be completed without going over rate limits. It will also be used to manage partial
