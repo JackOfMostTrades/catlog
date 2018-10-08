@@ -1,90 +1,13 @@
 import base64
 import hashlib
-import json
 import os.path
 import sys
-import urllib.request
 
-import asn1crypto.core
-import asn1crypto.x509
+from . import catlog_pb2
+from . import cert_encoding
+from . import le_client
+from .catlog_db import CatlogDb
 
-from . import ctl_parser_structures
-
-
-def get_leaf_by_entry_id(ct_log, entry_id):
-    entries = json.loads(urllib.request.urlopen(
-        "{}/ct/v1/get-entries?start={}&end={}".format(ct_log, entry_id, entry_id)).read())
-    leaf = base64.b64decode(entries["entries"][0]["leaf_input"])
-
-    leaf_cert = ctl_parser_structures.MerkleTreeLeaf.parse(leaf).TimestampedEntry
-
-    if leaf_cert.LogEntryType == "X509LogEntryType":
-        # We have a normal x509 entry
-        cert = asn1crypto.x509.Certificate.load(leaf_cert.Entry.CertData)
-        tbsCert = cert["tbs_certificate"]
-    else:
-        # We have a precert entry
-        tbsCert = asn1crypto.x509.TbsCertificate.load(leaf_cert.Entry.TBSCertificate)
-
-    return tbsCert
-
-def get_leaf_by_hash(ct_log, hash):
-    sth = json.loads(urllib.request.urlopen("{}/ct/v1/get-sth".format(ct_log)).read())
-    tree_size = sth["tree_size"]
-    try:
-        proof = json.loads(urllib.request.urlopen(
-            "{}/ct/v1/get-proof-by-hash?hash={}&tree_size={}".format(ct_log, hash, tree_size)).read())
-    except:
-        return None
-    leaf_index = proof["leaf_index"]
-    return get_leaf_by_entry_id(ct_log, leaf_index)
-
-def get_subject_cn(tbsCert):
-    return tbsCert["subject"].native["common_name"]
-
-def get_sans(tbsCert):
-    sans = []
-    for ext in tbsCert["extensions"]:
-        if ext["extn_id"].native == "subject_alt_name":
-            for general_name in ext["extn_value"].parsed:
-                if isinstance(general_name.chosen, asn1crypto.x509.DNSName):
-                    sans.append(general_name.chosen.native)
-    return sans
-
-def cert_to_leaf_hashes(certBytes, issuerCertBytes):
-    issuer = asn1crypto.x509.Certificate.load(issuerCertBytes)
-    cert = asn1crypto.x509.Certificate.load(certBytes)
-
-    issuer_key_hash = hashlib.sha256(issuer["tbs_certificate"]["subject_public_key_info"].dump()).digest()
-    tbsCert = cert["tbs_certificate"]
-    scts = []
-    for i in range(len(tbsCert["extensions"])):
-        if tbsCert["extensions"][i]["extn_id"].native == "signed_certificate_timestamp_list":
-            # Parse log id, timestamp, extensions out of extension
-            sct_list = ctl_parser_structures.SignedCertificateTimestampList.parse(tbsCert["extensions"][i]["extn_value"].parsed.native)
-            for sct in sct_list.sct_list:
-                scts.append(sct.sct)
-            del tbsCert["extensions"][i]
-            break
-
-    tbsCertBytes = tbsCert.dump()
-    for sct in scts:
-        leaf = ctl_parser_structures.MerkleTreeLeaf.build(dict(
-            Version=0,
-            MerkleLeafType=0,
-            TimestampedEntry=dict(
-                Timestamp=sct.timestamp,
-                LogEntryType="PrecertLogEntryType",
-                Entry=dict(
-                    IssuerKeyHash=issuer_key_hash,
-                    TBSCertificateLength=len(tbsCertBytes),
-                    TBSCertificate=tbsCertBytes
-                ),
-                Extensions=sct.extensions
-            )
-        ))
-        leaf_hash = base64.b64encode(hashlib.sha256(b"\x00" + leaf).digest()).decode('utf-8')
-        print("log_id={}, leaf_hash={}".format(sct.id.hex(), leaf_hash))
 
 def push(cliArgs):
     if len(cliArgs) != 1:
@@ -94,19 +17,75 @@ def push(cliArgs):
         raise Exception("File not found: " + path)
     with open(path, "rb") as f:
         file_data = f.read()
-    push_data(f)
+    push_data(file_data)
 
 
-def push_data(data):
-    tbsCert = get_leaf_by_hash("https://ct.googleapis.com/icarus", "0Jw8rUAEGgbFuTb196OBfbjAPGlW80KupXV4idizeFA=")
-    #tbsCert = print(get_leaf_by_hash( "https://ct.googleapis.com/logs/argon2018", "IFiyQRhyGeLTKvDp9t8RUSf2Dv5KT1DX1XR6Mx0sMXU="))
+def push_data(data: bytes) -> None:
+    catlog_db = CatlogDb()
 
-    print(get_subject_cn(tbsCert))
-    print(get_sans(tbsCert))
+    client = le_client.LeClient(catlog_db)
+    previous_chunk_ref = None
+    while len(data) > 0:
+        domain = catlog_db.pick_domain(True)
+        bytes_per_cert = cert_encoding.get_bytes_per_cert(domain.domain)
 
-    cert_to_leaf_hashes(open("/home/ihaken/Downloads/leaf.crt", "rb").read(),
-                        open("/home/ihaken/Downloads/issuer.crt", "rb").read())
+        # Figure out how big to make this cert's chunk...
+        chunk_size = bytes_per_cert
+        chunk_data = None
+        while chunk_size > 0:
+            chunk = catlog_pb2.CertificateData(
+                data_chunk=catlog_pb2.DataChunk(
+                    previous_chunk=previous_chunk_ref,
+                    chunk=data[:chunk_size]
+                )
+            )
+            chunk_data = bytes(chunk.SerializeToString())
+            if len(chunk_data) <= bytes_per_cert:
+                break
+            chunk_size -= 1
 
+        # Actually mint the cert...
+        cert, issuer = client.mint_cert(domain, chunk_data)
+
+        # Build the previous chunk reference...
+        leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
+        log_entry_refs = []
+        for leaf_hash in leaf_hashes:
+            log_entry_refs.append(catlog_pb2.LogEntryReference(
+                log_id=leaf_hash[0],
+                leaf_hash=leaf_hash[1]
+            ))
+        previous_chunk_ref = catlog_pb2.CertificateReference(
+            fingerprint_sha256=hashlib.sha256(cert).digest(),
+            log_entry=log_entry_refs
+        )
+
+        data = data[chunk_size:]
+
+    return previous_chunk_ref
+
+
+def pull_data(ct_log_id: bytes, leaf_hash: bytes) -> bytes:
+    previous_chunk_ref = catlog_pb2.CertificateReference(
+        log_entry=[catlog_pb2.LogEntryReference(
+            log_id=ct_log_id,
+            leaf_hash=leaf_hash
+        )]
+    )
+    data = bytes()
+    while previous_chunk_ref is not None:
+        log_entry = previous_chunk_ref.log_entry[0]
+        ct_log_id = log_entry.log_id
+        leaf_hash = log_entry.leaf_hash
+        ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
+        tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
+        encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
+                                                cert_encoding.get_subject_cn(tbsCert))
+        data_chunk = catlog_pb2.CertificateData.ParseFromString(encoded).data_chunk
+        previous_chunk_ref = data_chunk.previous_chunk
+        data = data_chunk.chunk + data
+
+    return data
 
 def main(args):
     if args[0] == 'push':

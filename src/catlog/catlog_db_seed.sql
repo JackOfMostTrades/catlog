@@ -26,3 +26,11 @@ CREATE TABLE IF NOT EXISTS certificate_log (
   staging INTEGER NOT NULL, -- Boolean value indicating if cert was created in a "staging" env.
   FOREIGN KEY (domain_id) REFERENCES domains(id)
 );
+
+CREATE TABLE IF NOT EXISTS certificate_log_ct_entry (
+  certificate_log_id INTEGER NOT NULL,
+  log_id VARCHAR(255) NOT NULL,
+  leaf_hash VARCHAR(255) NOT NULL,
+  PRIMARY KEY (certificate_log_id, log_id, leaf_hash),
+  FOREIGN KEY (certificate_log_id) REFERENCES certificate_log
+);

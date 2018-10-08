@@ -3,6 +3,7 @@ import os
 import os.path
 import sqlite3
 import time
+from typing import List, Tuple
 
 home = os.path.expanduser("~")
 
@@ -66,7 +67,15 @@ class CatlogDb:
             row = self._db.execute("SELECT id,domain,tld FROM domains WHERE id=?", (row[0],)).fetchone()
         return Domain(id=row[0], domain=row[1], tld=row[2])
 
-    def add_certificate_log(self, domain: Domain, fingerprint_sha256: bytes, staging: bool) -> None:
-        self._db.execute("INSERT INTO certificate_log (date,domain_id,fingerprint_sha256,staging) VALUES(?,?,?,?)",
+    def add_certificate_log(self, domain: Domain, fingerprint_sha256: bytes, staging: bool,
+                            leaf_hashes: List[Tuple[bytes, bytes]]) -> None:
+        cursor = self._db.cursor()
+        cursor.execute("INSERT INTO certificate_log (date,domain_id,fingerprint_sha256,staging) VALUES(?,?,?,?)",
                          (str(int(time.time())), domain.id, base64.b64encode(fingerprint_sha256), 1 if staging else 0,))
+        certificate_log_id = cursor.lastrowid
+        for leaf_hash in leaf_hashes:
+            cursor.execute("INSERT INTO certificate_log_ct_entry(certificate_log_id, log_id, leaf_hash) VALUES (?,?,?)",
+                           (certificate_log_id,
+                            base64.b64encode(leaf_hash[0]).decode('utf-8'),
+                            base64.b64encode(leaf_hash[1]).decode('utf-8'),))
         self._db.commit()

@@ -1,5 +1,5 @@
 import hashlib
-from typing import List
+from typing import List, Tuple
 
 import acme.challenges
 import acme.messages
@@ -12,11 +12,11 @@ import certbot.interfaces
 import certbot.reporter
 import josepy as jose
 import zope.component
-from asn1crypto import pem
 from zope.interface import implementer
 
-from . import catlog_db
-from .cert_encoding import data_to_domains
+from . import cert_encoding
+from .catlog_db import CatlogDb, Domain
+from .cert_encoding import data_to_domains, pem_to_der
 from .dns_provider import CatlogResolver
 
 
@@ -39,8 +39,8 @@ class SimpleConfig:
 
 
 class SimpleAccountStorage(certbot.interfaces.AccountStorage):
-    def __init__(self, catlogDb: catlog_db.CatlogDb):
-        self._db = catlogDb
+    def __init__(self, catlog_db: CatlogDb):
+        self._db = catlog_db
 
     def find_all(self) -> List[certbot.account.Account]:
         accounts = []
@@ -82,9 +82,6 @@ class SimpleAuthenticator:
             responses.append(result[0])
             verification = result[1]
             domain = achall.validation_domain_name(achall.domain)
-            # FIXME: Set txt record
-            print(domain)
-            print(verification)
             self._catlog_resolver.setTxt(domain, verification)
         return responses
 
@@ -100,8 +97,8 @@ class NoopInstaller:
 
 
 class LeClient:
-    def __init__(self, catlogDb: catlog_db.CatlogDb):
-        self._catlogDb = catlogDb
+    def __init__(self, catlog_db: CatlogDb):
+        self._catlog_db = catlog_db
         self._config = SimpleConfig()
         zope.component.getGlobalSiteManager().registerUtility(self._config, certbot.interfaces.IConfig)
         zope.component.getGlobalSiteManager().registerUtility(certbot.display.util.NoninteractiveDisplay("/dev/null"),
@@ -109,9 +106,8 @@ class LeClient:
         zope.component.getGlobalSiteManager().registerUtility(certbot.reporter.Reporter(self._config),
                                                               certbot.interfaces.IReporter)
 
-    def mint_cert(self, raw_data: bytes):
-        domain = self._catlogDb.pick_domain(True)
-        account_storage = SimpleAccountStorage(self._catlogDb)
+    def _mint_cert_with_domains(self, domains: List[str]) -> Tuple[bytes, bytes]:
+        account_storage = SimpleAccountStorage(self._catlog_db)
         if len(account_storage.find_all()) == 0:
             certbot.client.register(self._config, account_storage, tos_cb=None)
         account = account_storage.find_all()[0]
@@ -121,14 +117,18 @@ class LeClient:
             authenticator = SimpleAuthenticator(catlog_resolver)
             installer = NoopInstaller()
             client = certbot.client.Client(self._config, account, authenticator, installer, acme=None)
-            result = client.obtain_certificate(data_to_domains(raw_data, domain.domain))
+            result = client.obtain_certificate(domains)
 
-            # Log the certificate
-            if not pem.detect(result[0]):
-                raise Exception("Unable to parse PEM result of obtained cert: " + result[0])
-            _, _, der_bytes = pem.unarmor(result[0])
-            self._catlogDb.add_certificate_log(domain, hashlib.sha256(der_bytes).digest(), True)
+            # Convert the result to DER bytes
+            cert, issuer = (pem_to_der(result[0]), pem_to_der(result[1]))
 
-            return (result[0], result[1])  # cert as a pem string and issuer as pem string
+            return (cert, issuer)
         finally:
             catlog_resolver.stop()
+
+    def mint_cert(self, domain: Domain, raw_data: bytes) -> Tuple[bytes, bytes]:
+        cert, issuer = self._mint_cert_with_domains(data_to_domains(raw_data, domain.domain))
+        leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
+        # Log the certificate
+        self._catlog_db.add_certificate_log(domain, hashlib.sha256(cert).digest(), True, leaf_hashes)
+        return (cert, issuer)

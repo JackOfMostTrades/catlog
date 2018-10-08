@@ -22,7 +22,7 @@ class CatlogResolver(BaseResolver):
         qname = request.q.qname.idna()[:-1].lower()
         qtype = QTYPE[request.q.qtype]
         if qtype == 'TXT' and qname in self.txtMap:
-            reply.add_answer(*RR.fromZone('{} IN TXT {}'.format(qname, self.txtMap[qname])))
+            reply.add_answer(*RR.fromZone('{} IN TXT "{}"'.format(qname, self.txtMap[qname])))
         else:
             reply.header.rcode = RCODE.NXDOMAIN
         return reply
