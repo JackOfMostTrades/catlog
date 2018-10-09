@@ -32,8 +32,6 @@ class FileStatus:
 class BoxDb:
     def __init__(self, box_root):
         box_db = os.path.join(box_root, "box.db")
-        if not os.path.isfile(box_db):
-            raise Exception("Invalid box root: " + box_root)
         self._db = sqlite3.connect(box_db)
         self.initdb()
 
@@ -65,7 +63,7 @@ class BoxDb:
 
     def get_box_refs(self) -> List[Tuple[bytes, bytes]]:
         refs = []
-        for row in self._db.execute("SELECT log_id,leaf_hosh FROM box_ct_entry"):
+        for row in self._db.execute("SELECT log_id,leaf_hash FROM box_ct_entry"):
             refs.append((
                 base64.b64decode(row[0]),
                 base64.b64decode(row[1])
@@ -91,7 +89,7 @@ class BoxDb:
             file = FileStatus(id=row[0], filename=row[1])
             file.upload_offset = row[2]
             file.upload_complete = (row[3] != 0)
-            file.upload_fingerprint_sha256 = row[4]
+            file.upload_fingerprint_sha256 = None if row[4] is None else base64.b64decode(row[4])
             file.committed = (row[5] != 0)
             files.append(file)
         return files
@@ -103,7 +101,7 @@ class BoxDb:
             file = FileStatus(id=row[0], filename=row[1])
             file.upload_offset = row[2]
             file.upload_complete = (row[3] != 0)
-            file.upload_fingerprint_sha256 = row[4]
+            file.upload_fingerprint_sha256 = None if row[4] is None else base64.b64decode(row[4])
             file.committed = (row[5] != 0)
             files[file.id] = file
         for row in self._db.execute(
@@ -123,25 +121,25 @@ class BoxDb:
         file = FileStatus(id=row[0], filename=row[1])
         file.upload_offset = row[2]
         file.upload_complete = (row[3] != 0)
-        file.upload_fingerprint_sha256 = row[4]
+        file.upload_fingerprint_sha256 = None if row[4] is None else base64.b64decode(row[4])
         file.committed = (row[5] != 0)
 
         for row in self._db.execute("SELECT log_id,leaf_hash FROM file_status_ct_entry WHERE file_status_id=?",
                                     (file.id,)):
-            file.log_entries.append((base64.b64decode(row[0]).decode('utf-8'),
-                                     base64.b64decode(row[1]).decode('utf-8')))
+            file.log_entries.append((base64.b64decode(row[0]),
+                                     base64.b64decode(row[1])))
         return file
 
     def set_file_status(self, file: FileStatus) -> None:
         cursor = self._db.cursor()
-        id_row = cursor.execute("SELECT id FROM file_status WHERE filename=?"(file.filename, )).fetchone()
+        id_row = cursor.execute("SELECT id FROM file_status WHERE filename=?", (file.filename,)).fetchone()
         if id_row is None:
             cursor.execute(
                 "INSERT INTO file_status (filename, upload_offset, upload_complete, upload_fingerprint_sha256, committed) VALUES (?,?,?,?,?)",
                 (file.filename,
                  file.upload_offset,
                  1 if file.upload_complete else 0,
-                 file.upload_fingerprint_sha256,
+                 base64.b64encode(file.upload_fingerprint_sha256).decode('utf-8'),
                  1 if file.committed else 0,))
             id = cursor.lastrowid
         else:
@@ -150,7 +148,7 @@ class BoxDb:
                 "UPDATE file_status SET upload_offset=?, upload_complete=?, upload_fingerprint_sha256=?, committed=? WHERE id=?",
                 (file.upload_offset,
                  1 if file.upload_complete else 0,
-                 file.upload_fingerprint_sha256,
+                 base64.b64encode(file.upload_fingerprint_sha256).decode('utf-8'),
                  1 if file.committed else 0,
                  id,))
         cursor.execute("DELETE FROM file_status_ct_entry WHERE file_status_id=?", (id,))

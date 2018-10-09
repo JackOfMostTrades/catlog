@@ -40,7 +40,7 @@ def push(cliArgs):
         raise Exception("Must be working in a box to push files. Perhaps you need to run `catlog init`?")
     box_db = BoxDb(box_root)
     try:
-        relpath = os.path.relpath(path, box_root)
+        relpath = os.path.relpath(path, os.path.dirname(box_root))
         file_status = box_db.get_file_status(relpath)
         if file_status is None:
             file_status = FileStatus(filename=relpath)
@@ -76,9 +76,12 @@ def commit(cliArgs):
                     log_id=leaf_hash[0],
                     leaf_hash=leaf_hash[1]
                 ))
-            file_data.append(catlog_pb2.CertificateReference(
-                fingerprint_sha256=file_status.upload_fingerprint_sha256,
-                log_entry=log_refs
+            file_data.append(catlog_pb2.FileData(
+                name=file_status.filename,
+                certificate_reference=catlog_pb2.CertificateReference(
+                    fingerprint_sha256=file_status.upload_fingerprint_sha256,
+                    log_entry=log_refs
+                )
             ))
 
         client = le_client.LeClient(catlog_db)
@@ -234,7 +237,7 @@ def status(cliArgs):
         uncommitted = []
         partially_uploaded = []
         for file in box_db.get_all_files():
-            full_path = os.path.join(box_root, file.filename)
+            full_path = os.path.join(os.path.dirname(box_root), file.filename)
             if not file.upload_complete:
                 partially_uploaded.append(file)
             elif not file.committed:
@@ -375,7 +378,7 @@ def pull(cliArgs):
         box_root = discover_box_root()
         if box_root is None:
             raise Exception("Not working in a box; cannot pull file by path name.")
-        rel_path = os.path.relpath(full_path, box_root)
+        rel_path = os.path.relpath(full_path, os.path.dirname(box_root))
         box_db = BoxDb(box_root)
         file_status = box_db.get_file_status(rel_path)
         box_db.close()
@@ -441,13 +444,14 @@ def add(cliArgs):
     if box_root is None:
         raise Exception("`catlog add` can only be run in a box!")
     box_db = BoxDb(box_root)
+    filename = os.path.relpath(filename, os.path.dirname(box_root))
 
     try:
         # Sanity check that the ref is something we can fetch
         ct_log_url = cert_encoding.lookup_ct_log_by_id(log_ref[0])
         if ct_log_url is None:
             raise Exception("Unable to resolve CT log from log ID")
-        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref[1]).decode('utf-8'))
+        tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url, base64.b64encode(log_ref[1]).decode('utf-8'))
         if tbsCert is None:
             raise Exception("Unable to lookup log ref: " + cliArgs[1])
 
