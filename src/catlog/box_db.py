@@ -70,10 +70,11 @@ class BoxDb:
             ))
         return refs
 
-    def set_box_refs(self, fingerprint_sha256: bytes, log_refs: List[Tuple[bytes, bytes]]) -> None:
+    def set_box_refs(self, fingerprint_sha256: Optional[bytes], log_refs: List[Tuple[bytes, bytes]]) -> None:
         self._db.execute("DELETE FROM box_config WHERE key='fingerprint_sha256'")
-        self._db.execute("INSERT INTO box_config (key,value) VALUES('fingerprint_sha256',?)",
-                         (base64.b64encode(fingerprint_sha256).decode('utf-8'),))
+        if fingerprint_sha256 is not None:
+            self._db.execute("INSERT INTO box_config (key,value) VALUES('fingerprint_sha256',?)",
+                             (base64.b64encode(fingerprint_sha256).decode('utf-8'),))
         self._db.execute("DELETE FROM box_ct_entry")
         for log_ref in log_refs:
             self._db.execute("INSERT INTO box_ct_entry (log_id,leaf_hash) VALUES(?,?)", (

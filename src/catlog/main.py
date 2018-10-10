@@ -180,9 +180,10 @@ def clone(cliArgs):
 
         while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
             ct_log_url = None
-            for log_entry in previous_chunk_ref.log_entry:
-                ct_log_id = log_entry.log_id
-                leaf_hash = log_entry.leaf_hash
+            leaf_hash = None
+            for ref in previous_chunk_ref.log_entry:
+                ct_log_id = ref.log_id
+                leaf_hash = ref.leaf_hash
                 ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
                 if ct_log_url is not None:
                     break
@@ -203,11 +204,15 @@ def clone(cliArgs):
                 file_status.upload_complete = True
                 file_status.upload_fingerprint_sha256 = file_datum.certificate_reference.fingerprint_sha256
                 file_status.committed = True
-                for log_entry in file_datum.certificate_reference.log_entry:
+                for entry in file_datum.certificate_reference.log_entry:
                     file_status.log_entries.append((
-                        log_entry.log_id, log_entry.leaf_hash
+                        entry.log_id, entry.leaf_hash
                     ))
                 box_db.set_file_status(file_status)
+
+        # Save the reference we just used to clone this box
+        box_db.set_box_refs(None, [(log_entry[0], log_entry[1])])
+
     finally:
         box_db.close()
 
