@@ -163,7 +163,23 @@ def lookup_ct_log_by_id(log_id: bytes) -> Optional[str]:
     return None
 
 
-def get_leaf_by_entry_id(ct_log: str, entry_id: str) -> asn1crypto.x509.TbsCertificate:
+def lookup_ct_log_id_by_url(ct_log_url: bytes) -> Optional[str]:
+    if ct_log_url.startswith("https://"):
+        ct_log_url = ct_log_url[len("https://"):]
+    elif ct_log_url.startswith("http://"):
+        ct_log_url = ct_log_url[len("http://"):]
+    if not ct_log_url.endswith('/'):
+        ct_log_url += '/'
+
+    with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "all_logs_list.json"), "r") as f:
+        all_logs = json.loads(f.read())
+    for log in all_logs["logs"]:
+        if ct_log_url == log["url"]:
+            return hashlib.sha256(base64.b64decode(log["key"])).digest()
+    return None
+
+
+def get_raw_leaf_by_entry_id(ct_log: str, entry_id: str) -> bytes:
     entries = json.loads(urllib.request.urlopen(
         "{}ct/v1/get-entries?{}".format(ct_log,
                                         urllib.parse.urlencode({
@@ -171,7 +187,11 @@ def get_leaf_by_entry_id(ct_log: str, entry_id: str) -> asn1crypto.x509.TbsCerti
                                             "end": entry_id
                                         }))).read())
     leaf = base64.b64decode(entries["entries"][0]["leaf_input"])
+    return leaf
 
+
+def get_leaf_by_entry_id(ct_log: str, entry_id: str) -> asn1crypto.x509.TbsCertificate:
+    leaf = get_raw_leaf_by_entry_id(ct_log, entry_id)
     leaf_cert = ctl_parser_structures.MerkleTreeLeaf.parse(leaf).TimestampedEntry
 
     if leaf_cert.LogEntryType == "X509LogEntryType":
