@@ -23,7 +23,7 @@ def get_cert_ids_by_cn(common_name: str) -> List[str]:
     return ids
 
 
-def get_leaf_hashes_by_cert_id(cert_id: str) -> List[Tuple[bytes, str]]:
+def get_leaf_hashes_by_cert_id(cert_id: str) -> List[Tuple[bytes, bytes]]:
     # Alas, crt.sh doesn't support JSON format for fetching full cert data. So let's do some HTML scraping...
     response_body = urllib.request.urlopen(
         "https://crt.sh/?{}".format(urllib.parse.urlencode({

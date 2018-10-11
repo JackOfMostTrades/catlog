@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 
 from . import catlog_pb2
 from . import cert_encoding
+from . import crt_sh
 from . import le_client
 from .box_db import discover_box_root, BoxDb, FileStatus
 from .catlog_db import CatlogDb
@@ -179,8 +180,34 @@ def clone(cliArgs):
     if len(cliArgs) != 1:
         raise Exception("Expected exactly only argument to `catlog clone`")
     log_entry = parse_log_ref(cliArgs[0])
-    if log_entry is None:
-        raise Exception("`catlog clone` argument not a valid log reference: " + cliArgs[0])
+    if log_entry is not None:
+        previous_chunk_ref = catlog_pb2.CertificateReference(
+            log_entry=[
+                catlog_pb2.LogEntryReference(
+                    log_id=log_entry[0],
+                    leaf_hash=log_entry[1]
+                )
+            ])
+    else:
+        last_index = 0
+        found_ids = []
+        while True:
+            index = last_index + 1
+            ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(index, cliArgs[0]))
+            if len(ids) == 0:
+                break
+            last_index = index
+            found_ids = ids
+        if len(found_ids) == 0:
+            raise Exception("Invalid certificate reference: " + cliArgs[0])
+        log_entry_refs = []
+        for id in ids:
+            for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
+                log_entry_refs.append(catlog_pb2.LogEntryReference(
+                    log_id=leaf_hash[0],
+                    leaf_hash=leaf_hash[1]
+                ))
+        previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
 
     box_root = discover_box_root()
     if box_root is not None:
@@ -192,67 +219,65 @@ def clone(cliArgs):
 
     box_db = BoxDb(box_root)
     try:
-        box_name = None
-        last_box_index = 0
-
-        previous_chunk_ref = catlog_pb2.CertificateReference(
-            log_entry=[(
-                catlog_pb2.LogEntryReference(
-                    log_id=log_entry[0],
-                    leaf_hash=log_entry[1]
-                )
-            )])
-
-        while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
-            ct_log_url = None
-            leaf_hash = None
-            for ref in previous_chunk_ref.log_entry:
-                ct_log_id = ref.log_id
-                leaf_hash = ref.leaf_hash
-                ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
-                if ct_log_url is not None:
-                    break
-
-            if ct_log_url is None:
-                raise Exception("Unable to resolve any CT logs from log IDs")
-
-            tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url,
-                                                     base64.b64encode(leaf_hash).decode('utf-8'))
-
-            # Set last_box_index and box_name from cert's common name
-            common_name = cert_encoding.get_subject_cn(tbsCert)
-            common_name_match = re.match(r'^([0-9]+)\.(.*)', common_name)
-            if common_name_match is not None:
-                box_name = common_name_match.group(2)
-                last_box_index = max(last_box_index, int(common_name_match.group(1)))
-
-            # Pull all the data out of the cert
-            encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert), common_name)
-            cert_data = catlog_pb2.CertificateData()
-            cert_data.ParseFromString(encoded)
-            box_chunk = cert_data.box_chunk
-            previous_chunk_ref = box_chunk.previous_chunk
-            for file_datum in box_chunk.file_data:
-                file_status = FileStatus(filename=file_datum.name)
-                file_status.upload_complete = True
-                file_status.upload_fingerprint_sha256 = file_datum.certificate_reference.fingerprint_sha256
-                file_status.committed = True
-                for entry in file_datum.certificate_reference.log_entry:
-                    file_status.log_entries.append((
-                        entry.log_id, entry.leaf_hash
-                    ))
-                box_db.set_file_status(file_status)
-
+        _fetch_from(box_db, previous_chunk_ref, None)
         # Save the reference we just used to clone this box
         box_db.set_box_refs(None, [(log_entry[0], log_entry[1])])
-        if box_name is not None:
-            box_db.set_config('box_name', box_name)
-        if last_box_index > 0:
-            box_db.set_config('last_box_index', str(last_box_index))
-
     finally:
         box_db.close()
 
+
+def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReference, stop_at_index: Optional[int]):
+    box_name = None
+    last_box_index = 0
+
+    while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
+        ct_log_url = None
+        leaf_hash = None
+        for ref in previous_chunk_ref.log_entry:
+            ct_log_id = ref.log_id
+            leaf_hash = ref.leaf_hash
+            ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
+            if ct_log_url is not None:
+                break
+
+        if ct_log_url is None:
+            raise Exception("Unable to resolve any CT logs from log IDs")
+
+        tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url,
+                                                 base64.b64encode(leaf_hash).decode('utf-8'))
+
+        # Set last_box_index and box_name from cert's common name
+        common_name = cert_encoding.get_subject_cn(tbsCert)
+        common_name_match = re.match(r'^([0-9]+)\.(.*)', common_name)
+        if common_name_match is not None:
+            box_name = common_name_match.group(2)
+            cert_index = int(common_name_match.group(1))
+            if (stop_at_index is not None) and stop_at_index == cert_index:
+                break
+            last_box_index = max(last_box_index, int(common_name_match.group(1)))
+
+        # Pull all the data out of the cert
+        encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert), common_name)
+        cert_data = catlog_pb2.CertificateData()
+        cert_data.ParseFromString(encoded)
+        box_chunk = cert_data.box_chunk
+        previous_chunk_ref = box_chunk.previous_chunk
+        for file_datum in box_chunk.file_data:
+            file_status = FileStatus(filename=file_datum.name)
+            file_status.upload_complete = True
+            file_status.upload_fingerprint_sha256 = file_datum.certificate_reference.fingerprint_sha256
+            file_status.committed = True
+            for entry in file_datum.certificate_reference.log_entry:
+                file_status.log_entries.append((
+                    entry.log_id, entry.leaf_hash
+                ))
+            box_db.set_file_status(file_status)
+
+    # Save the name and box index
+    if box_name is not None:
+        box_db.set_config('box_name', box_name)
+    if last_box_index > 0:
+        box_db.set_config('last_box_index', str(last_box_index))
 
 def status(cliArgs):
     if len(cliArgs) != 0:
@@ -519,8 +544,38 @@ def fetch(cliArgs):
         box_name = box_db.get_config('box_name')
         last_box_index = int(box_db.get_config('last_box_index'))
 
-        # FIXME: Implement `catlog fetch`
-        raise Exception("Implement me!")
+        max_found_id = last_box_index
+        found_cert_ids = None
+        while True:
+            next_id = max_found_id + 1
+            cert_ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(next_id, box_name))
+            if len(cert_ids) == 0:
+                break
+            max_found_id = next_id
+            found_cert_ids = cert_ids
+
+        if max_found_id == last_box_index:
+            print("Up to date!")
+            return
+        print("Updating from {} to {}".format(last_box_index, max_found_id))
+
+        leaf_hashes = []
+        for id in found_cert_ids:
+            for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
+                leaf_hashes.append(leaf_hash)
+        if len(leaf_hashes) == 0:
+            raise Exception("Unable to resolve leaf hashes from crt.sh")
+        log_entry_refs = []
+        for leaf_hash in leaf_hashes:
+            log_entry_refs.append(catlog_pb2.LogEntryReference(
+                log_id=leaf_hash[0],
+                leaf_hash=leaf_hash[1]
+            ))
+        previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
+
+        _fetch_from(box_db, previous_chunk_ref, last_box_index)
+        # Save the reference we just used to clone this box
+        box_db.set_box_refs(None, leaf_hashes)
 
     finally:
         box_db.close()

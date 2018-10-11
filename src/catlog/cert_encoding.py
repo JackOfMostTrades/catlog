@@ -178,7 +178,7 @@ def lookup_ct_log_by_id(log_id: bytes) -> Optional[str]:
     return None
 
 
-def lookup_ct_log_id_by_url(ct_log_url: bytes) -> Optional[str]:
+def lookup_ct_log_id_by_url(ct_log_url: str) -> Optional[bytes]:
     if ct_log_url.startswith("https://"):
         ct_log_url = ct_log_url[len("https://"):]
     elif ct_log_url.startswith("http://"):
