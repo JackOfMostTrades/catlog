@@ -33,14 +33,17 @@ def get_bytes_per_cert(dns_suffix: str) -> int:
     return get_bytes_per_san(dns_suffix) * (MAX_SANS_PER_CERT - 1)
 
 
-def data_to_domains(raw_data: bytes, dns_suffix: str) -> List[str]:
+def data_to_domains(raw_data: bytes, common_name: str, dns_suffix: str) -> List[str]:
+    if not common_name.endswith(dns_suffix):
+        raise Exception("Common name must end with dns_suffix")
+
     bytes_per_san = get_bytes_per_san(dns_suffix)
     bytes_per_cert = get_bytes_per_cert(dns_suffix)
 
     if len(raw_data) > bytes_per_cert:
         raise Exception("Data is too big: {} > {}".format(len(raw_data), bytes_per_cert))
 
-    sans = [dns_suffix]
+    sans = [common_name]
     data = raw_data
     index = 0
     while len(data) > 0:
@@ -58,10 +61,22 @@ def add_b32_padding(d: str) -> str:
     return d + padding
 
 
-def domains_to_data(domains: List[str], dns_suffix: str) -> bytes:
+def find_dns_suffix(domains: List[str]) -> str:
+    suffix = domains[0].split('.')
+    for i in range(1, len(domains)):
+        domain = domains[i].split('.')
+        for j in range(len(suffix)):
+            if domain[len(domain) - j - 1] != suffix[len(suffix) - j - 1]:
+                suffix = suffix[len(suffix) - j:]
+                break
+    return '.'.join(suffix)
+
+
+def domains_to_data(domains: List[str], common_name: str) -> bytes:
+    dns_suffix = find_dns_suffix(domains)
     datas = []
     for san in domains:
-        if san == dns_suffix:
+        if san == common_name:
             continue
         if not san.endswith(dns_suffix):
             raise Exception("Unexpected SAN in cert: " + san)

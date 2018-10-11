@@ -11,7 +11,7 @@ class TestLeClient(TestCase):
         catlogDb = catlog_db.CatlogDb()
         domain = catlogDb.pick_domain(True)
         client = le_client.LeClient(catlogDb)
-        (cert, issuer) = client.mint_cert(domain, b"Hello, World!" * 100)
+        (cert, issuer) = client.mint_cert(domain, domain.domain, b"Hello, World!" * 100)
         print(base64.b64encode(cert).decode('utf-8'))
 
     def test_mint_strange_cert(self):

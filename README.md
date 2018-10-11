@@ -80,9 +80,10 @@ $ xdg-open cat2.jpg
 The `catlog` command operates similarly to the "git" cli, with a number of similarly-named (but differently behaved)
 subcommands.
 
-## `catlog init`
+## `catlog init box-name.example.com`
 Initializes the current working directory as a cat box. When operating in an initialized directory catlog keeps
-accounting of rate limits in effect, as well as the state of files in the box.
+accounting of rate limits in effect, as well as the state of files in the box. The name can be used as a convenient
+alias for later cloning the box.
 
 ## `catlog config`
 This subcommand is going to be used to configure various aspects of catlog's operation, such as:
@@ -93,6 +94,9 @@ This subcommand is going to be used to configure various aspects of catlog's ope
 ## `catlog clone <ref>`
 Clones a box from the CT logs. This gets a listing of all files in the box, but does not actually download any of the
 files.
+
+## `catlog fetch`
+Looks for any updates to the current box that's been committed to CT logs.
 
 ## `catlog pull <ref>`
 If ref is a leaf hash, public key, DNS name, etc, this will download the file from CT logs and write it to stdout. If

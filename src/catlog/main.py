@@ -2,6 +2,7 @@ import base64
 import hashlib
 import os
 import os.path
+import re
 import sys
 from typing import List, Optional, Tuple
 
@@ -14,17 +15,34 @@ from .config_cmd import config_cmd
 
 
 def init(cliArgs):
-    if len(cliArgs) != 0:
-        raise Exception("catlog init doesn't take arguments")
-    box_root = discover_box_root()
-    if box_root is not None:
-        raise Exception("It looks like you're already working under a box: " + box_root)
-    box_root = os.path.join(os.getcwd(), ".catlog")
-    if not os.path.isdir(box_root):
-        os.mkdir(box_root, 0o700)
-    # Instantiate an empty box db
-    box_db = BoxDb(box_root)
-    box_db.close()
+    if len(cliArgs) != 1:
+        raise Exception("catlog init takes exactly one argument")
+    box_name = cliArgs[0]
+    catlog_db = CatlogDb()
+    is_valid_domain = False
+    for domain in catlog_db.get_domains():
+        if box_name.endswith(domain):
+            is_valid_domain = True
+            break
+    if not is_valid_domain:
+        raise Exception("Box name " + box_name + " is not under a configured domain.")
+
+    try:
+        box_root = discover_box_root()
+        if box_root is not None:
+            raise Exception("It looks like you're already working under a box: " + box_root)
+        box_root = os.path.join(os.getcwd(), ".catlog")
+        if not os.path.isdir(box_root):
+            os.mkdir(box_root, 0o700)
+        # Instantiate an empty box db
+        box_db = BoxDb(box_root)
+        try:
+            box_db.set_config('box_name', cliArgs[0])
+            box_db.set_config('last_box_index', '0')
+        finally:
+            box_db.close()
+    finally:
+        catlog_db.close()
 
 
 def push(cliArgs):
@@ -60,6 +78,8 @@ def commit(cliArgs):
     if box_root is None:
         raise Exception("No box found. `catlog commit` can only be run from within a box!")
     box_db = BoxDb(box_root)
+    box_index = int(box_db.get_config('last_box_index'))
+    box_name = box_db.get_config('box_name')
     catlog_db = CatlogDb()
     try:
         files_to_commit = box_db.get_all_files_for_commit()
@@ -124,7 +144,7 @@ def commit(cliArgs):
 
             # Actually mint the cert...
             print("Minting a certificate that commits {} new files to the box...".format(num_files))
-            cert, issuer = client.mint_cert(domain, chunk_data)
+            cert, issuer = client.mint_cert(domain, "{}.{}".format(box_index + 1, box_name), chunk_data)
 
             # Build the previous chunk reference...
             leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
@@ -143,6 +163,8 @@ def commit(cliArgs):
             # Update the box_db, marking the new box refs and committed files
             box_db.mark_files_committed([x.name for x in file_data[:num_files]])
             box_db.set_box_refs(fingerprint_sha256, leaf_hashes)
+            box_db.set_config('last_box_index', str(box_index + 1))
+            box_index += 1
 
             # Finally, reset file_data for next iteration
             file_data = file_data[num_files:]
@@ -170,6 +192,9 @@ def clone(cliArgs):
 
     box_db = BoxDb(box_root)
     try:
+        box_name = None
+        last_box_index = 0
+
         previous_chunk_ref = catlog_pb2.CertificateReference(
             log_entry=[(
                 catlog_pb2.LogEntryReference(
@@ -193,8 +218,16 @@ def clone(cliArgs):
 
             tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url,
                                                      base64.b64encode(leaf_hash).decode('utf-8'))
-            encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
-                                                    cert_encoding.get_subject_cn(tbsCert))
+
+            # Set last_box_index and box_name from cert's common name
+            common_name = cert_encoding.get_subject_cn(tbsCert)
+            common_name_match = re.match(r'^([0-9]+)\.(.*)', common_name)
+            if common_name_match is not None:
+                box_name = common_name_match.group(2)
+                last_box_index = max(last_box_index, int(common_name_match.group(1)))
+
+            # Pull all the data out of the cert
+            encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert), common_name)
             cert_data = catlog_pb2.CertificateData()
             cert_data.ParseFromString(encoded)
             box_chunk = cert_data.box_chunk
@@ -212,6 +245,10 @@ def clone(cliArgs):
 
         # Save the reference we just used to clone this box
         box_db.set_box_refs(None, [(log_entry[0], log_entry[1])])
+        if box_name is not None:
+            box_db.set_config('box_name', box_name)
+        if last_box_index > 0:
+            box_db.set_config('last_box_index', str(last_box_index))
 
     finally:
         box_db.close()
@@ -326,7 +363,7 @@ def push_data(data: bytes, box_db: Optional[BoxDb], file_status: Optional[FileSt
 
         # Actually mint the cert...
         print("Minting a certificate that commits {} bytes of data...".format(chunk_size))
-        cert, issuer = client.mint_cert(domain, chunk_data)
+        cert, issuer = client.mint_cert(domain, domain.domain, chunk_data)
 
         # Build the previous chunk reference...
         leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
@@ -471,6 +508,23 @@ def add(cliArgs):
         box_db.close()
 
 
+def fetch(cliArgs):
+    if len(cliArgs) != 0:
+        raise Exception("`catlog fetch` command takes no arguments")
+    box_root = discover_box_root()
+    if box_root is None:
+        raise Exception("`catlog fetch` can only be run in a box!")
+    box_db = BoxDb(box_root)
+    try:
+        box_name = box_db.get_config('box_name')
+        last_box_index = int(box_db.get_config('last_box_index'))
+
+        # FIXME: Implement `catlog fetch`
+        raise Exception("Implement me!")
+
+    finally:
+        box_db.close()
+
 def main(args):
     if args[0] == 'push':
         push(args[1:])
@@ -488,6 +542,8 @@ def main(args):
         commit(args[1:])
     elif args[0] == 'add':
         add(args[1:])
+    elif args[0] == 'fetch':
+        fetch(args[1:])
     else:
         raise Exception("Unsupported subcommand: " + args[0])
 

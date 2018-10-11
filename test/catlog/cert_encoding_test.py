@@ -19,3 +19,9 @@ class TestCertEncoding(TestCase):
         random.shuffle(domains)
         data = cert_encoding.domains_to_data(domains, dns_suffix)
         assert (data == input)
+
+    def test_find_dns_suffix(self):
+        assert cert_encoding.find_dns_suffix(["foo.bar.xyz.baz", "xyz.xyz.baz", "foo.baz"]) == "baz"
+        assert cert_encoding.find_dns_suffix(["foo.bar.xyz.baz", "xyz.xyz.baz", "xyz.baz"]) == "xyz.baz"
+        assert cert_encoding.find_dns_suffix(["foo.bar.xyz.baz", "xyz.xyz.baz", "foo.xyz.baz"]) == "xyz.baz"
+        assert cert_encoding.find_dns_suffix(["foo.xyz.baz", "boo.xyz.baz", "moo.xyz.baz"]) == "xyz.baz"

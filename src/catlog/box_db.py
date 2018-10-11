@@ -52,7 +52,14 @@ class BoxDb:
         return row[0]
 
     def set_config(self, key: str, value: str) -> None:
-        self._db.execute("UPDATE box_config SET value=? WHERE key=?", (value, key,))
+        if value is None:
+            self._db.execute("DELETE FROM box_config WHERE key=?", (key,))
+        else:
+            row = self._db.execute("SELECT value FROM box_config WHERE key=?", (key,)).fetchone()
+            if row is None:
+                self._db.execute("INSERT INTO box_config (key,value) VALUES(?,?)", (key, value,))
+            else:
+                self._db.execute("UPDATE box_config SET value=? WHERE key=?", (value, key,))
         self._db.commit()
 
     def get_box_fingerprint_sha256(self) -> Optional[bytes]:

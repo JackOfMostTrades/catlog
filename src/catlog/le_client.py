@@ -126,8 +126,8 @@ class LeClient:
         finally:
             catlog_resolver.stop()
 
-    def mint_cert(self, domain: Domain, raw_data: bytes) -> Tuple[bytes, bytes]:
-        cert, issuer = self._mint_cert_with_domains(data_to_domains(raw_data, domain.domain))
+    def mint_cert(self, domain: Domain, common_name: str, raw_data: bytes) -> Tuple[bytes, bytes]:
+        cert, issuer = self._mint_cert_with_domains(data_to_domains(raw_data, common_name, domain.domain))
         leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
         # Log the certificate
         self._catlog_db.add_certificate_log(domain, hashlib.sha256(cert).digest(), True, leaf_hashes)
