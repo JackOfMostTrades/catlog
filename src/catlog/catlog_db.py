@@ -20,12 +20,14 @@ class Domain:
 
 
 class CatlogDb:
-    def __init__(self):
-        home = os.path.expanduser("~")
-        catlogDir = os.path.join(home, ".catlog")
-        if not os.path.isdir(catlogDir):
-            os.mkdir(catlogDir, 0o700)
-        self._db = sqlite3.connect(os.path.join(catlogDir, "catlog.db"))
+    def __init__(self, path=None):
+        if path is None:
+            home = os.path.expanduser("~")
+            catlogDir = os.path.join(home, ".catlog")
+            if not os.path.isdir(catlogDir):
+                os.mkdir(catlogDir, 0o700)
+            path = os.path.join(catlogDir, "catlog.db")
+        self._db = sqlite3.connect(path)
         self.initdb()
 
     def initdb(self):

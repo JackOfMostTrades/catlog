@@ -97,7 +97,7 @@ def pem_to_der(cert: str) -> bytes:
     return der_bytes
 
 
-def cert_to_leaf_hashes(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[bytes, bytes]]:
+def cert_to_merkle_tree_leaves(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[bytes, bytes]]:
     issuer = asn1crypto.x509.Certificate.load(issuerCertBytes)
     cert = asn1crypto.x509.Certificate.load(certBytes)
 
@@ -116,7 +116,7 @@ def cert_to_leaf_hashes(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[
 
     tbsCertBytes = tbsCert.dump()
 
-    leaf_hashes = []
+    leaves = []
     for sct in scts:
         leaf = ctl_parser_structures.MerkleTreeLeaf.build(dict(
             Version=0,
@@ -132,12 +132,22 @@ def cert_to_leaf_hashes(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[
                 Extensions=sct.extensions
             )
         ))
-        leaf_hash = hashlib.sha256(b"\x00" + leaf).digest()
-        leaf_hashes.append((sct.id, leaf_hash))
+        leaves.append((sct.id, leaf))
+    return leaves
+
+def cert_to_leaf_hashes(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[bytes, bytes]]:
+    leaves = cert_to_merkle_tree_leaves(certBytes, issuerCertBytes)
+    leaf_hashes = []
+    for leaf in leaves:
+        leaf_hash = hashlib.sha256(b"\x00" + leaf[1]).digest()
+        leaf_hashes.append((leaf[0], leaf_hash))
     return leaf_hashes
 
 
 def get_leaf_by_hash(ct_log: str, hash: str) -> Optional[asn1crypto.x509.TbsCertificate]:
+    if (not ct_log.startswith("http://")) and (not ct_log.startswith("https://")):
+        ct_log = "https://" + ct_log
+
     sth = json.loads(urllib.request.urlopen("{}ct/v1/get-sth".format(ct_log)).read())
     tree_size = sth["tree_size"]
     try:
@@ -168,10 +178,18 @@ def get_sans(tbsCert: asn1crypto.x509.TbsCertificate):
     return sans
 
 
+_all_logs = []
+
+
+def get_all_logs():
+    global _all_logs
+    if len(_all_logs) == 0:
+        with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "all_logs_list.json"), "r") as f:
+            _all_logs = json.loads(f.read())
+    return _all_logs
+
 def lookup_ct_log_by_id(log_id: bytes) -> Optional[str]:
-    with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "all_logs_list.json"), "r") as f:
-        all_logs = json.loads(f.read())
-    for log in all_logs["logs"]:
+    for log in get_all_logs()["logs"]:
         id = hashlib.sha256(base64.b64decode(log["key"])).digest()
         if id == log_id:
             return log["url"]
@@ -186,9 +204,7 @@ def lookup_ct_log_id_by_url(ct_log_url: str) -> Optional[bytes]:
     if not ct_log_url.endswith('/'):
         ct_log_url += '/'
 
-    with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "all_logs_list.json"), "r") as f:
-        all_logs = json.loads(f.read())
-    for log in all_logs["logs"]:
+    for log in get_all_logs()["logs"]:
         if ct_log_url == log["url"]:
             return hashlib.sha256(base64.b64decode(log["key"])).digest()
     return None

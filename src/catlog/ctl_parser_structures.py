@@ -34,7 +34,7 @@ MerkleTreeLeaf = Struct(
     "TimestampedEntry" / TimestampedEntry
 )
 
-HashAlgorithm = Enum(Byte, none=0, md5=1, sha1=2, ash224=3, sha256=5, sha384=5, sha512=6)
+HashAlgorithm = Enum(Byte, none=0, md5=1, sha1=2, sha224=3, sha256=4, sha384=5, sha512=6)
 SignatureAlgorithm = Enum(Byte, anonymous=0, rsa=1, dsa=2, ecdsa=3)
 
 SignatureAndHashAlgorithm = Struct(

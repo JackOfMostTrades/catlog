@@ -243,7 +243,7 @@ def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReferen
         if ct_log_url is None:
             raise Exception("Unable to resolve any CT logs from log IDs")
 
-        tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url,
+        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url,
                                                  base64.b64encode(leaf_hash).decode('utf-8'))
 
         # Set last_box_index and box_name from cert's common name
@@ -487,7 +487,7 @@ def pull_data(log_entries: List[Tuple[bytes, bytes]]) -> bytes:
         if ct_log_url is None:
             raise Exception("Unable to resolve any CT logs from log IDs")
 
-        tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
+        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
         encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
                                                 cert_encoding.get_subject_cn(tbsCert))
         cert_data = catlog_pb2.CertificateData()
@@ -518,7 +518,7 @@ def add(cliArgs):
         ct_log_url = cert_encoding.lookup_ct_log_by_id(log_ref[0])
         if ct_log_url is None:
             raise Exception("Unable to resolve CT log from log ID")
-        tbsCert = cert_encoding.get_leaf_by_hash("https://" + ct_log_url, base64.b64encode(log_ref[1]).decode('utf-8'))
+        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref[1]).decode('utf-8'))
         if tbsCert is None:
             raise Exception("Unable to lookup log ref: " + cliArgs[1])
 
