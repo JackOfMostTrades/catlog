@@ -82,6 +82,8 @@ def domains_to_data(domains: List[str], common_name: str) -> bytes:
             raise Exception("Unexpected SAN in cert: " + san)
         encoded = san[0:-len(dns_suffix)].replace('.', '')
         data = base64.b32decode(add_b32_padding(encoded.upper()))
+        if len(data) < 2:
+            raise Exception("Unable to decode data from SAN: {}".format(san))
         datas.append({"ordinal": data[0], "data": data[1:]})
     datas.sort(key=lambda x: x["ordinal"])
     result = bytes()
@@ -178,50 +180,47 @@ def get_sans(tbsCert: asn1crypto.x509.TbsCertificate):
     return sans
 
 
-_all_logs = []
-
-
-def get_all_logs():
-    global _all_logs
-    if len(_all_logs) == 0:
+class CtLogList:
+    def __init__(self):
         with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "all_logs_list.json"), "r") as f:
-            _all_logs = json.loads(f.read())
-    return _all_logs
+            self._all_logs = json.loads(f.read())
 
-def lookup_ct_log_by_id(log_id: bytes) -> Optional[str]:
-    for log in get_all_logs()["logs"]:
-        id = hashlib.sha256(base64.b64decode(log["key"])).digest()
-        if id == log_id:
-            return log["url"]
-    return None
+    def lookup_ct_log_by_id(self, log_id: bytes) -> Optional[str]:
+        for log in self._all_logs["logs"]:
+            id = hashlib.sha256(base64.b64decode(log["key"])).digest()
+            if id == log_id:
+                return log["url"]
+        return None
 
+    def lookup_ct_log_id_by_url(self, ct_log_url: str) -> Optional[bytes]:
+        if ct_log_url.startswith("https://"):
+            ct_log_url = ct_log_url[len("https://"):]
+        elif ct_log_url.startswith("http://"):
+            ct_log_url = ct_log_url[len("http://"):]
+        if not ct_log_url.endswith('/'):
+            ct_log_url += '/'
 
-def lookup_ct_log_id_by_url(ct_log_url: str) -> Optional[bytes]:
-    if ct_log_url.startswith("https://"):
-        ct_log_url = ct_log_url[len("https://"):]
-    elif ct_log_url.startswith("http://"):
-        ct_log_url = ct_log_url[len("http://"):]
-    if not ct_log_url.endswith('/'):
-        ct_log_url += '/'
-
-    for log in get_all_logs()["logs"]:
-        if ct_log_url == log["url"]:
-            return hashlib.sha256(base64.b64decode(log["key"])).digest()
-    return None
+        for log in self._all_logs["logs"]:
+            if ct_log_url == log["url"]:
+                return hashlib.sha256(base64.b64decode(log["key"])).digest()
+        return None
 
 
-def get_raw_leaf_by_entry_id(ct_log: str, entry_id: str) -> bytes:
+def get_raw_leaf_by_entry_id(ct_log: str, entry_id: int) -> bytes:
     entries = json.loads(urllib.request.urlopen(
         "{}ct/v1/get-entries?{}".format(ct_log,
                                         urllib.parse.urlencode({
-                                            "start": entry_id,
-                                            "end": entry_id
+                                            "start": str(entry_id),
+                                            "end": str(entry_id)
                                         }))).read())
     leaf = base64.b64decode(entries["entries"][0]["leaf_input"])
     return leaf
 
 
-def get_leaf_by_entry_id(ct_log: str, entry_id: str) -> asn1crypto.x509.TbsCertificate:
+def get_leaf_by_entry_id(ct_log: str, entry_id: int) -> asn1crypto.x509.TbsCertificate:
+    if (not ct_log.startswith("http://")) and (not ct_log.startswith("https://")):
+        ct_log = "https://" + ct_log
+
     leaf = get_raw_leaf_by_entry_id(ct_log, entry_id)
     leaf_cert = ctl_parser_structures.MerkleTreeLeaf.parse(leaf).TimestampedEntry
 

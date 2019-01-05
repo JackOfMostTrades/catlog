@@ -4,6 +4,8 @@ import os.path
 import sqlite3
 from typing import List, Optional, Tuple
 
+from . import catlog_pb2
+
 
 def discover_box_root() -> Optional[str]:
     dir = os.getcwd()
@@ -77,7 +79,7 @@ class BoxDb:
             ))
         return refs
 
-    def set_box_refs(self, fingerprint_sha256: Optional[bytes], log_refs: List[Tuple[bytes, bytes]]) -> None:
+    def set_box_refs(self, fingerprint_sha256: Optional[bytes], log_refs: List[catlog_pb2.LogEntryReference]) -> None:
         self._db.execute("DELETE FROM box_config WHERE key='fingerprint_sha256'")
         if fingerprint_sha256 is not None:
             self._db.execute("INSERT INTO box_config (key,value) VALUES('fingerprint_sha256',?)",
@@ -85,8 +87,8 @@ class BoxDb:
         self._db.execute("DELETE FROM box_ct_entry")
         for log_ref in log_refs:
             self._db.execute("INSERT INTO box_ct_entry (log_id,leaf_hash) VALUES(?,?)", (
-                base64.b64encode(log_ref[0]).decode('utf-8'),
-                base64.b64encode(log_ref[1]).decode('utf-8'),
+                base64.b64encode(log_ref.log_id).decode('utf-8'),
+                base64.b64encode(log_ref.leaf_hash).decode('utf-8'),
             ))
         self._db.commit()
 
@@ -114,10 +116,10 @@ class BoxDb:
             files[file.id] = file
         for row in self._db.execute(
                 "SELECT file_status_id,log_id,leaf_hash FROM file_status_ct_entry E INNER JOIN file_status S ON S.id=E.file_status_id WHERE upload_complete<>0 AND committed=0"):
-            id = row[0]
-            files[row[0]].log_entries.append((
-                base64.b64decode(row[1]),
-                base64.b64decode(row[2])))
+            log_ref = catlog_pb2.LogEntryReference()
+            log_ref.log_id = base64.b64decode(row[1])
+            log_ref.leaf_hash = base64.b64decode(row[2])
+            files[row[0]].log_entries.append(log_ref)
         return list(files.values())
 
     def get_file_status(self, filename: str) -> Optional[FileStatus]:
@@ -134,8 +136,10 @@ class BoxDb:
 
         for row in self._db.execute("SELECT log_id,leaf_hash FROM file_status_ct_entry WHERE file_status_id=?",
                                     (file.id,)):
-            file.log_entries.append((base64.b64decode(row[0]),
-                                     base64.b64decode(row[1])))
+            log_ref = catlog_pb2.LogEntryReference()
+            log_ref.log_id = row[0]
+            log_ref.leaf_hash = row[1]
+            file.log_entries.append(log_ref)
         return file
 
     def set_file_status(self, file: FileStatus) -> None:
@@ -163,8 +167,8 @@ class BoxDb:
         for log_entry in file.log_entries:
             cursor.execute("INSERT INTO file_status_ct_entry (file_status_id, log_id, leaf_hash) VALUES (?,?,?)",
                            (id,
-                            base64.b64encode(log_entry[0]).decode('utf-8'),
-                            base64.b64encode(log_entry[1]).decode('utf-8'),))
+                            base64.b64encode(log_entry.log_id).decode('utf-8'),
+                            base64.b64encode(log_entry.leaf_hash).decode('utf-8'),))
         self._db.commit()
 
     def mark_files_committed(self, names: List[str]) -> None:

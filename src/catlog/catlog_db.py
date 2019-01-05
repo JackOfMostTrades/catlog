@@ -40,23 +40,25 @@ class CatlogDb:
     def close(self):
         self._db.close()
 
-    def find_all_accounts(self):
+    def find_all_accounts(self, staging: bool):
         accounts = []
-        for row in self._db.execute("SELECT account_id,registration_json,key_json FROM accounts"):
+        for row in self._db.execute("SELECT account_id,registration_json,key_json FROM accounts WHERE staging=?",
+                                    (1 if staging else 0,)):
             accounts.append(row)
         return accounts
 
-    def load_account(self, account_id: str):
-        return self._db.execute("SELECT account_id,registration_json,key_json FROM accounts WHERE account_id=?",
-                                (account_id,))
+    def load_account(self, staging: bool, account_id: str):
+        return self._db.execute(
+            "SELECT account_id,registration_json,key_json FROM accounts WHERE staging=? AND account_id=?",
+            (1 if staging else 0, account_id,))
 
-    def save_account(self, account_id: str, registration_json: str, key_json: str) -> None:
-        self._db.execute("INSERT INTO accounts (account_id,registration_json,key_json) VALUES(?,?,?)",
-                         (account_id, registration_json, key_json,))
+    def save_account(self, staging: bool, account_id: str, registration_json: str, key_json: str) -> None:
+        self._db.execute("INSERT INTO accounts (staging,account_id,registration_json,key_json) VALUES(?,?,?,?)",
+                         (1 if staging else 0, account_id, registration_json, key_json,))
         self._db.commit()
 
     def add_domain(self, domain: str) -> None:
-        row = self._db.execute("SELECT id FROM domains WHERE domain=?", (domain,))
+        row = self._db.execute("SELECT id FROM domains WHERE domain=?", (domain,)).fetchone()
         if row is None:
             self._db.execute("INSERT INTO domains (domain,tld,disabled) VALUES(?,?,0)", (domain, domain,))
         else:
@@ -69,6 +71,9 @@ class CatlogDb:
 
     def get_domains(self) -> Dict[str, Tuple[int, int]]:
         domains = {}
+        for row in self._db.execute("SELECT domain FROM domains"):
+            domains[row[0]] = (0, 0)
+
         one_week_ago = int(time.time()) - 7 * 24 * 60 * 60
         for staging in [0, 1]:
             for row in self._db.execute(

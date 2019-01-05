@@ -1,10 +1,12 @@
 CREATE TABLE IF NOT EXISTS accounts (
   id INTEGER NOT NULL PRIMARY KEY,
+  staging INTEGER NOT NULL, -- Boolean value indicating if this is a staging environment account
   account_id VARCHAR(255) NOT NULL,
   registration_json TEXT NOT NULL,
   key_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS accounts_account_id_idx ON accounts (account_id);
+CREATE INDEX IF NOT EXISTS accounts_staging_idx ON accounts (staging);
 
 CREATE TABLE IF NOT EXISTS domains (
   id INTEGER NOT NULL PRIMARY KEY,

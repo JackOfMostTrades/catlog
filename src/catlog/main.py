@@ -4,7 +4,7 @@ import os
 import os.path
 import re
 import sys
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from . import catlog_pb2
 from . import cert_encoding
@@ -15,75 +15,83 @@ from .catlog_db import CatlogDb
 from .config_cmd import config_cmd
 
 
-def init(cliArgs):
-    if len(cliArgs) != 1:
-        raise Exception("catlog init takes exactly one argument")
-    box_name = cliArgs[0]
-    catlog_db = CatlogDb()
-    is_valid_domain = False
-    for domain in catlog_db.get_domains():
-        if box_name.endswith(domain):
-            is_valid_domain = True
-            break
-    if not is_valid_domain:
-        raise Exception("Box name " + box_name + " is not under a configured domain.")
-
-    try:
+class CatlogMain:
+    def __init__(self):
+        self._catlog_db = CatlogDb()
         box_root = discover_box_root()
         if box_root is not None:
-            raise Exception("It looks like you're already working under a box: " + box_root)
+            self._box_root = box_root
+            self._box_db = BoxDb(box_root)
+        else:
+            self._box_root = None
+            self._box_db = None
+        self._le_client = le_client.LeClient(False, self._catlog_db)
+        self._ct_log_list = cert_encoding.CtLogList()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
+    def close(self):
+        self._catlog_db.close()
+        if self._box_db is not None:
+            self._box_db.close()
+
+    def init(self, cliArgs):
+        if len(cliArgs) != 1:
+            raise Exception("catlog init takes exactly one argument")
+        box_name = cliArgs[0]
+        is_valid_domain = False
+        for domain in self._catlog_db.get_domains():
+            if box_name.endswith(domain):
+                is_valid_domain = True
+                break
+        if not is_valid_domain:
+            raise Exception("Box name " + box_name + " is not under a configured domain.")
+
+        if self._box_db is not None:
+            raise Exception("It looks like you're already working under a box!")
+
         box_root = os.path.join(os.getcwd(), ".catlog")
         if not os.path.isdir(box_root):
             os.mkdir(box_root, 0o700)
         # Instantiate an empty box db
-        box_db = BoxDb(box_root)
-        try:
-            box_db.set_config('box_name', cliArgs[0])
-            box_db.set_config('last_box_index', '0')
-        finally:
-            box_db.close()
-    finally:
-        catlog_db.close()
+        self._box_root = box_root
+        self._box_db = BoxDb(box_root)
+        self._box_db.set_config('box_name', cliArgs[0])
+        self._box_db.set_config('last_box_index', '0')
 
+    def push(self, cliArgs):
+        if len(cliArgs) != 1:
+            raise Exception("catlog push expects exactly one argument")
+        path = cliArgs[0]
+        if not os.path.isfile(path):
+            raise Exception("File not found: " + path)
 
-def push(cliArgs):
-    if len(cliArgs) != 1:
-        raise Exception("catlog push expects exactly one argument")
-    path = cliArgs[0]
-    if not os.path.isfile(path):
-        raise Exception("File not found: " + path)
+        if self._box_db is None:
+            raise Exception("Must be working in a box to push files. Perhaps you need to run `catlog init`?")
 
-    # Manage the file status using the box db
-    box_root = discover_box_root()
-    if box_root is None:
-        raise Exception("Must be working in a box to push files. Perhaps you need to run `catlog init`?")
-    box_db = BoxDb(box_root)
-    try:
-        relpath = os.path.relpath(path, os.path.dirname(box_root))
-        file_status = box_db.get_file_status(relpath)
+        relpath = os.path.relpath(path, os.path.dirname(self._box_root))
+        file_status = self._box_db.get_file_status(relpath)
         if file_status is None:
             file_status = FileStatus(filename=relpath)
 
         with open(path, "rb") as f:
             file_data = f.read()
-        push_data(file_data, box_db, file_status)
-    finally:
-        box_db.close()
+        _push_data(file_data, self._box_db, self._le_client, file_status)
 
+    def commit(self, cliArgs):
+        if len(cliArgs) != 0:
+            raise Exception("catlog commit doesn't take any arguments")
 
-def commit(cliArgs):
-    if len(cliArgs) != 0:
-        raise Exception("catlog commit doesn't take any arguments")
+        if self._box_db is None:
+            raise Exception("No box found. `catlog commit` can only be run from within a box!")
+        box_index = int(self._box_db.get_config('last_box_index'))
+        box_name = self._box_db.get_config('box_name')
 
-    box_root = discover_box_root()
-    if box_root is None:
-        raise Exception("No box found. `catlog commit` can only be run from within a box!")
-    box_db = BoxDb(box_root)
-    box_index = int(box_db.get_config('last_box_index'))
-    box_name = box_db.get_config('box_name')
-    catlog_db = CatlogDb()
-    try:
-        files_to_commit = box_db.get_all_files_for_commit()
+        files_to_commit = self._box_db.get_all_files_for_commit()
         if len(files_to_commit) == 0:
             print("Up to date!")
             return
@@ -92,11 +100,8 @@ def commit(cliArgs):
         file_data = []
         for file_status in files_to_commit:
             log_refs = []
-            for leaf_hash in file_status.log_entries:
-                log_refs.append(catlog_pb2.LogEntryReference(
-                    log_id=leaf_hash[0],
-                    leaf_hash=leaf_hash[1]
-                ))
+            for log_ref in file_status.log_entries:
+                log_refs.append(log_ref)
             file_data.append(catlog_pb2.FileData(
                 name=file_status.filename,
                 certificate_reference=catlog_pb2.CertificateReference(
@@ -105,11 +110,10 @@ def commit(cliArgs):
                 )
             ))
 
-        client = le_client.LeClient(catlog_db)
         previous_chunk_ref = None
 
-        fingerprint_sha256 = box_db.get_box_fingerprint_sha256()
-        leaf_hashes = box_db.get_box_refs()
+        fingerprint_sha256 = self._box_db.get_box_fingerprint_sha256()
+        leaf_hashes = self._box_db.get_box_refs()
         if (fingerprint_sha256 is not None) or len(leaf_hashes) > 0:
             log_entry_refs = []
             for leaf_hash in leaf_hashes:
@@ -123,7 +127,7 @@ def commit(cliArgs):
             )
 
         while len(file_data) > 0:
-            domain = catlog_db.pick_domain(True)
+            domain = self._catlog_db.pick_domain(True)
             bytes_per_cert = cert_encoding.get_bytes_per_cert(domain.domain)
 
             # Figure out how big to make this cert's chunk...
@@ -145,7 +149,7 @@ def commit(cliArgs):
 
             # Actually mint the cert...
             print("Minting a certificate that commits {} new files to the box...".format(num_files))
-            cert, issuer = client.mint_cert(domain, "{}.{}".format(box_index + 1, box_name), chunk_data)
+            cert, issuer = self._le_client.mint_cert(domain, "{}.{}".format(box_index + 1, box_name), chunk_data)
 
             # Build the previous chunk reference...
             leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
@@ -162,68 +166,218 @@ def commit(cliArgs):
             )
 
             # Update the box_db, marking the new box refs and committed files
-            box_db.mark_files_committed([x.name for x in file_data[:num_files]])
-            box_db.set_box_refs(fingerprint_sha256, leaf_hashes)
-            box_db.set_config('last_box_index', str(box_index + 1))
+            self._box_db.mark_files_committed([x.name for x in file_data[:num_files]])
+            self._box_db.set_box_refs(fingerprint_sha256, leaf_hashes)
+            self._box_db.set_config('last_box_index', str(box_index + 1))
             box_index += 1
 
             # Finally, reset file_data for next iteration
             file_data = file_data[num_files:]
 
         return None
-    finally:
-        catlog_db.close()
-        box_db.close()
 
+    def clone(self, cliArgs):
+        if len(cliArgs) != 1:
+            raise Exception("Expected exactly only argument to `catlog clone`")
+        log_entry = _parse_log_ref(self._ct_log_list, cliArgs[0])
+        if log_entry is not None:
+            previous_chunk_ref = catlog_pb2.CertificateReference(
+                log_entry=[log_entry]
+            )
+        else:
+            last_index = 0
+            found_ids = []
+            while True:
+                index = last_index + 1
+                ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(index, cliArgs[0]))
+                if len(ids) == 0:
+                    break
+                last_index = index
+                found_ids = ids
+            if len(found_ids) == 0:
+                raise Exception("Invalid certificate reference: " + cliArgs[0])
+            log_entry_refs = []
+            for id in ids:
+                for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
+                    log_entry_refs.append(catlog_pb2.LogEntryReference(
+                        log_id=leaf_hash[0],
+                        leaf_hash=leaf_hash[1]
+                    ))
+            previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
 
-def clone(cliArgs):
-    if len(cliArgs) != 1:
-        raise Exception("Expected exactly only argument to `catlog clone`")
-    log_entry = parse_log_ref(cliArgs[0])
-    if log_entry is not None:
-        previous_chunk_ref = catlog_pb2.CertificateReference(
-            log_entry=[
-                catlog_pb2.LogEntryReference(
-                    log_id=log_entry[0],
-                    leaf_hash=log_entry[1]
-                )
-            ])
-    else:
-        last_index = 0
-        found_ids = []
-        while True:
-            index = last_index + 1
-            ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(index, cliArgs[0]))
-            if len(ids) == 0:
-                break
-            last_index = index
-            found_ids = ids
-        if len(found_ids) == 0:
-            raise Exception("Invalid certificate reference: " + cliArgs[0])
-        log_entry_refs = []
-        for id in ids:
-            for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
-                log_entry_refs.append(catlog_pb2.LogEntryReference(
-                    log_id=leaf_hash[0],
-                    leaf_hash=leaf_hash[1]
+        if self._box_db is not None:
+            raise Exception(
+                "Already inside a box. `catlog clone` should be issued inside a directory you intend to use as the cloned box")
+        box_root = os.path.join(os.getcwd(), ".catlog")
+        if not os.path.isdir(box_root):
+            os.mkdir(box_root, 0o700)
+
+        self._box_root = box_root
+        self._box_db = BoxDb(box_root)
+        _fetch_from(self._box_db, previous_chunk_ref, None)
+        # Save the reference we just used to clone this box
+        self._box_db.set_box_refs(None, [log_entry])
+
+    def status(self, cliArgs):
+        if len(cliArgs) != 0:
+            raise Exception("No arguments supported for catlog status command.")
+
+        if self._box_db is None:
+            raise Exception("Box not found. Perhaps you need to run `catlog init`?")
+
+        refs = self._box_db.get_box_refs()
+        if len(refs) > 0:
+            print("Box log references")
+            print("------------------")
+            for ref in refs:
+                print("{}|{}".format(
+                    base64.b64encode(ref[0]).decode('utf-8'),
+                    base64.b64encode(ref[1]).decode('utf-8')
                 ))
+            print()
+
+        not_fetched = []
+        fetched = []
+        uncommitted = []
+        partially_uploaded = []
+        for file in self._box_db.get_all_files():
+            full_path = os.path.join(os.path.dirname(self._box_root), file.filename)
+            if not file.upload_complete:
+                partially_uploaded.append(file)
+            elif not file.committed:
+                uncommitted.append(file)
+            elif not os.path.exists(full_path):
+                not_fetched.append(file)
+            else:
+                fetched.append(file)
+
+        if len(partially_uploaded) > 0:
+            print("Partially upload...")
+            print("-------------------")
+            for file in partially_uploaded:
+                print(file.filename)
+            print()
+        if len(uncommitted) > 0:
+            print("Uploaded but uncommitted...")
+            print("---------------------------")
+            for file in uncommitted:
+                print(file.filename)
+            print()
+        if len(not_fetched) > 0:
+            print("Available but not fetched...")
+            print("----------------------------")
+            for file in not_fetched:
+                print(file.filename)
+
+        # FIXME: We should look for and report on files under the box_root that are completely untracked.
+        return
+
+    def config(self, cliArgs):
+        config_cmd(cliArgs)
+
+    def pull(self, cliArgs):
+        if len(cliArgs) != 1:
+            raise Exception("catlog pull expects exactly one argument")
+        filename_arg = cliArgs[0]
+        log_entry_arg = _parse_log_ref(self._ct_log_list, filename_arg)
+        if log_entry_arg is not None:
+            log_entries = [log_entry_arg]
+            output_target = None
+        else:
+            # Assume this is an actual file path.
+            full_path = os.path.abspath(cliArgs[0])
+            if os.path.exists(full_path):
+                raise Exception("Destination filename already exists: " + full_path)
+            if self._box_root is None:
+                raise Exception("Not working in a box; cannot pull file by path name.")
+            rel_path = os.path.relpath(full_path, os.path.dirname(self._box_root))
+            file_status = self._box_db.get_file_status(rel_path)
+            if file_status is None:
+                raise Exception("File path {} is unknown to box.".format(rel_path))
+
+            log_entries = file_status.log_entries
+            output_target = full_path
+
+        data = _pull_data(self._ct_log_list, log_entries)
+
+        if output_target is None:
+            os.write(1, data)  # FIXME: Is there a python constant for stdout?
+        else:
+            d = os.path.dirname(output_target)
+            if not os.path.isdir(d):
+                os.mkdir(d)
+            with open(output_target, "wb") as f:
+                f.write(data)
+
+    def add(self, cliArgs):
+        if len(cliArgs) != 2:
+            raise Exception("catlog add command expects exactly two arguments")
+        filename = cliArgs[0]
+        log_ref = _parse_log_ref(self._ct_log_list, cliArgs[1])
+        if log_ref is None:
+            raise Exception("Second argument to `catlog add` must be a log ref: " + cliArgs[1])
+
+        if self._box_db is None:
+            raise Exception("`catlog add` can only be run in a box!")
+        filename = os.path.relpath(filename, os.path.dirname(self._box_root))
+
+        # Sanity check that the ref is something we can fetch
+        ct_log_url = cert_encoding.lookup_ct_log_by_id(log_ref.log_id)
+        if ct_log_url is None:
+            raise Exception("Unable to resolve CT log from log ID")
+        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref.leaf_hash).decode('utf-8'))
+        if tbsCert is None:
+            raise Exception("Unable to lookup log ref: " + cliArgs[1])
+
+        # Add uploaded but uncommitted status for the filename to the box
+        file_status = FileStatus(filename=filename)
+        file_status.upload_complete = True
+        file_status.committed = False
+        file_status.log_entries = [log_ref]
+
+        self._box_db.set_file_status(file_status)
+
+    def fetch(self, cliArgs):
+        if len(cliArgs) != 0:
+            raise Exception("`catlog fetch` command takes no arguments")
+        if self._box_db is None:
+            raise Exception("`catlog fetch` can only be run in a box!")
+
+        box_name = self._box_db.get_config('box_name')
+        last_box_index = int(self._box_db.get_config('last_box_index'))
+
+        max_found_id = last_box_index
+        found_cert_ids = None
+        while True:
+            next_id = max_found_id + 1
+            cert_ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(next_id, box_name))
+            if len(cert_ids) == 0:
+                break
+            max_found_id = next_id
+            found_cert_ids = cert_ids
+
+        if max_found_id == last_box_index:
+            print("Up to date!")
+            return
+        print("Updating from {} to {}".format(last_box_index, max_found_id))
+
+        leaf_hashes = []
+        for id in found_cert_ids:
+            for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
+                leaf_hashes.append(leaf_hash)
+        if len(leaf_hashes) == 0:
+            raise Exception("Unable to resolve leaf hashes from crt.sh")
+        log_entry_refs = []
+        for leaf_hash in leaf_hashes:
+            log_entry_refs.append(catlog_pb2.LogEntryReference(
+                log_id=leaf_hash[0],
+                leaf_hash=leaf_hash[1]
+            ))
         previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
 
-    box_root = discover_box_root()
-    if box_root is not None:
-        raise Exception(
-            "Already inside a box. `catlog clone` should be issued inside a directory you intend to use as the cloned box")
-    box_root = os.path.join(os.getcwd(), ".catlog")
-    if not os.path.isdir(box_root):
-        os.mkdir(box_root, 0o700)
-
-    box_db = BoxDb(box_root)
-    try:
-        _fetch_from(box_db, previous_chunk_ref, None)
-        # Save the reference we just used to clone this box
-        box_db.set_box_refs(None, [(log_entry[0], log_entry[1])])
-    finally:
-        box_db.close()
+        _fetch_from(self._box_db, previous_chunk_ref, last_box_index)
+        # Save the reference we just used to update this box
+        self._box_db.set_box_refs(None, leaf_hashes)
 
 
 def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReference, stop_at_index: Optional[int]):
@@ -268,9 +422,7 @@ def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReferen
             file_status.upload_fingerprint_sha256 = file_datum.certificate_reference.fingerprint_sha256
             file_status.committed = True
             for entry in file_datum.certificate_reference.log_entry:
-                file_status.log_entries.append((
-                    entry.log_id, entry.leaf_hash
-                ))
+                file_status.log_entries.append(entry)
             box_db.set_file_status(file_status)
 
     # Save the name and box index
@@ -279,71 +431,12 @@ def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReferen
     if last_box_index > 0:
         box_db.set_config('last_box_index', str(last_box_index))
 
-def status(cliArgs):
-    if len(cliArgs) != 0:
-        raise Exception("No arguments supported for catlog status command.")
 
-    box_root = discover_box_root()
-    if box_root is None:
-        raise Exception("Box not found. Perhaps you need to run `catlog init`?")
-    box_db = BoxDb(box_root)
-    try:
-        refs = box_db.get_box_refs()
-        if len(refs) > 0:
-            print("Box log references")
-            print("------------------")
-            for ref in refs:
-                print("{}|{}".format(
-                    base64.b64encode(ref[0]).decode('utf-8'),
-                    base64.b64encode(ref[1]).decode('utf-8')
-                ))
-            print()
-
-        not_fetched = []
-        fetched = []
-        uncommitted = []
-        partially_uploaded = []
-        for file in box_db.get_all_files():
-            full_path = os.path.join(os.path.dirname(box_root), file.filename)
-            if not file.upload_complete:
-                partially_uploaded.append(file)
-            elif not file.committed:
-                uncommitted.append(file)
-            elif not os.path.exists(full_path):
-                not_fetched.append(file)
-            else:
-                fetched.append(file)
-
-        if len(partially_uploaded) > 0:
-            print("Partially upload...")
-            print("-------------------")
-            for file in partially_uploaded:
-                print(file.filename)
-            print()
-        if len(uncommitted) > 0:
-            print("Uploaded but uncommitted...")
-            print("---------------------------")
-            for file in uncommitted:
-                print(file.filename)
-            print()
-        if len(not_fetched) > 0:
-            print("Available but not fetched...")
-            print("----------------------------")
-            for file in not_fetched:
-                print(file.filename)
-
-        # FIXME: We should look for and report on files under the box_root that are completely untracked.
-    finally:
-        box_db.close()
-
-
-def config(cliArgs):
-    config_cmd(cliArgs)
-
-
-def push_data(data: bytes, box_db: Optional[BoxDb], file_status: Optional[FileStatus]) -> None:
+def _push_data(data: bytes,
+               box_db: Optional[BoxDb],
+               client: le_client.LeClient,
+               file_status: Optional[FileStatus]) -> None:
     catlog_db = CatlogDb()
-    client = le_client.LeClient(catlog_db)
     previous_chunk_ref = None
 
     if (file_status is not None) and (file_status.upload_offset > 0) and (
@@ -353,11 +446,8 @@ def push_data(data: bytes, box_db: Optional[BoxDb], file_status: Optional[FileSt
 
         data = data[file_status.upload_offset:]
         log_entry_refs = []
-        for leaf_hash in file_status.log_entries:
-            log_entry_refs.append(catlog_pb2.LogEntryReference(
-                log_id=leaf_hash[0],
-                leaf_hash=leaf_hash[1]
-            ))
+        for log_ref in file_status.log_entries:
+            log_entry_refs.append(log_ref)
         previous_chunk_ref = catlog_pb2.CertificateReference(
             fingerprint_sha256=file_status.upload_fingerprint_sha256,
             log_entry=log_entry_refs
@@ -411,7 +501,7 @@ def push_data(data: bytes, box_db: Optional[BoxDb], file_status: Optional[FileSt
             new_file_status.upload_complete = (len(data) <= chunk_size)
             new_file_status.upload_fingerprint_sha256 = fingerprint_sha256
             new_file_status.committed = file_status.committed
-            new_file_status.log_entries = leaf_hashes
+            new_file_status.log_entries = log_entry_refs
             box_db.set_file_status(new_file_status)
             file_status = new_file_status
 
@@ -420,74 +510,49 @@ def push_data(data: bytes, box_db: Optional[BoxDb], file_status: Optional[FileSt
     return previous_chunk_ref
 
 
-def parse_log_ref(s: str) -> Optional[Tuple[bytes, bytes]]:
-    if (len(s) == 89) and s[44] == '|':
-        return (
-            base64.b64decode(s[:44]),
-            base64.b64decode(s[45:])
+def _parse_log_ref(ct_log_list: cert_encoding.CtLogList, s: str) -> Optional[catlog_pb2.LogEntryReference]:
+    if s.startswith("http") and '|' in s:
+        bar_index = s.index('|')
+        log_url = s[:bar_index]
+        log_id = ct_log_list.lookup_ct_log_id_by_url(log_url)
+        if log_id is None:
+            raise Exception("Unable to determine log id for {}".format(log_url))
+        return catlog_pb2.LogEntryReference(
+            log_id=log_id,
+            entry_id=int(s[bar_index + 1:])
         )
+    elif (len(s) == 89) and s[44] == '|':
+        log_ref = catlog_pb2.LogEntryReference()
+        log_ref.log_id = base64.b64decode(s[:44])
+        log_ref.leaf_hash = base64.b64decode(s[45:])
+        return log_ref
     return None
 
 
-def pull(cliArgs):
-    if len(cliArgs) != 1:
-        raise Exception("catlog pull expects exactly one argument")
-    filename_arg = cliArgs[0]
-    log_entry_arg = parse_log_ref(filename_arg)
-    if log_entry_arg is not None:
-        log_entries = [log_entry_arg]
-        output_target = None
-    else:
-        # Assume this is an actual file path.
-        full_path = os.path.abspath(cliArgs[0])
-        if os.path.exists(full_path):
-            raise Exception("Destination filename already exists: " + full_path)
-        box_root = discover_box_root()
-        if box_root is None:
-            raise Exception("Not working in a box; cannot pull file by path name.")
-        rel_path = os.path.relpath(full_path, os.path.dirname(box_root))
-        box_db = BoxDb(box_root)
-        file_status = box_db.get_file_status(rel_path)
-        box_db.close()
-        if file_status is None:
-            raise Exception("File path {} is unknown to box.".format(rel_path))
-
-        log_entries = file_status.log_entries
-        output_target = full_path
-
-    data = pull_data(log_entries)
-
-    if output_target is None:
-        os.write(1, data)  # FIXME: Is there a python constant for stdout?
-    else:
-        d = os.path.dirname(output_target)
-        if not os.path.isdir(d):
-            os.mkdir(d)
-        with open(output_target, "wb") as f:
-            f.write(data)
-
-
-def pull_data(log_entries: List[Tuple[bytes, bytes]]) -> bytes:
+def _pull_data(ct_log_list: cert_encoding.CtLogList, log_entries: List[catlog_pb2.LogEntryReference]) -> bytes:
     previous_chunk_ref = catlog_pb2.CertificateReference()
-    for log_entry in log_entries:
-        ref = previous_chunk_ref.log_entry.add()
-        ref.log_id = log_entry[0]
-        ref.leaf_hash = log_entry[1]
+    previous_chunk_ref.log_entry.extend(log_entries)
 
     data = bytes()
     while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
         ct_log_url = None
+        leaf_hash = None
+        entry_id = 0
         for log_entry in previous_chunk_ref.log_entry:
             ct_log_id = log_entry.log_id
             leaf_hash = log_entry.leaf_hash
-            ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
+            entry_id = log_entry.entry_id
+            ct_log_url = ct_log_list.lookup_ct_log_by_id(ct_log_id)
             if ct_log_url is not None:
                 break
 
         if ct_log_url is None:
             raise Exception("Unable to resolve any CT logs from log IDs")
 
-        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
+        if entry_id != 0:
+            tbsCert = cert_encoding.get_leaf_by_entry_id(ct_log_url, entry_id)
+        else:
+            tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
         encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
                                                 cert_encoding.get_subject_cn(tbsCert))
         cert_data = catlog_pb2.CertificateData()
@@ -499,108 +564,28 @@ def pull_data(log_entries: List[Tuple[bytes, bytes]]) -> bytes:
     return data
 
 
-def add(cliArgs):
-    if len(cliArgs) != 2:
-        raise Exception("catlog add command expects exactly two arguments")
-    filename = cliArgs[0]
-    log_ref = parse_log_ref(cliArgs[1])
-    if log_ref is None:
-        raise Exception("Second argument to `catlog add` must be a log ref: " + cliArgs[1])
-
-    box_root = discover_box_root()
-    if box_root is None:
-        raise Exception("`catlog add` can only be run in a box!")
-    box_db = BoxDb(box_root)
-    filename = os.path.relpath(filename, os.path.dirname(box_root))
-
-    try:
-        # Sanity check that the ref is something we can fetch
-        ct_log_url = cert_encoding.lookup_ct_log_by_id(log_ref[0])
-        if ct_log_url is None:
-            raise Exception("Unable to resolve CT log from log ID")
-        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref[1]).decode('utf-8'))
-        if tbsCert is None:
-            raise Exception("Unable to lookup log ref: " + cliArgs[1])
-
-        # Add uploaded but uncommitted status for the filename to the box
-        file_status = FileStatus(filename=filename)
-        file_status.upload_complete = True
-        file_status.committed = False
-        file_status.log_entries = [log_ref]
-
-        box_db.set_file_status(file_status)
-    finally:
-        box_db.close()
-
-
-def fetch(cliArgs):
-    if len(cliArgs) != 0:
-        raise Exception("`catlog fetch` command takes no arguments")
-    box_root = discover_box_root()
-    if box_root is None:
-        raise Exception("`catlog fetch` can only be run in a box!")
-    box_db = BoxDb(box_root)
-    try:
-        box_name = box_db.get_config('box_name')
-        last_box_index = int(box_db.get_config('last_box_index'))
-
-        max_found_id = last_box_index
-        found_cert_ids = None
-        while True:
-            next_id = max_found_id + 1
-            cert_ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(next_id, box_name))
-            if len(cert_ids) == 0:
-                break
-            max_found_id = next_id
-            found_cert_ids = cert_ids
-
-        if max_found_id == last_box_index:
-            print("Up to date!")
-            return
-        print("Updating from {} to {}".format(last_box_index, max_found_id))
-
-        leaf_hashes = []
-        for id in found_cert_ids:
-            for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
-                leaf_hashes.append(leaf_hash)
-        if len(leaf_hashes) == 0:
-            raise Exception("Unable to resolve leaf hashes from crt.sh")
-        log_entry_refs = []
-        for leaf_hash in leaf_hashes:
-            log_entry_refs.append(catlog_pb2.LogEntryReference(
-                log_id=leaf_hash[0],
-                leaf_hash=leaf_hash[1]
-            ))
-        previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
-
-        _fetch_from(box_db, previous_chunk_ref, last_box_index)
-        # Save the reference we just used to clone this box
-        box_db.set_box_refs(None, leaf_hashes)
-
-    finally:
-        box_db.close()
-
 def main(args):
-    if args[0] == 'push':
-        push(args[1:])
-    elif args[0] == 'init':
-        init(args[1:])
-    elif args[0] == 'pull':
-        pull(args[1:])
-    elif args[0] == 'config':
-        config(args[1:])
-    elif args[0] == 'status':
-        status(args[1:])
-    elif args[0] == 'clone':
-        clone(args[1:])
-    elif args[0] == 'commit':
-        commit(args[1:])
-    elif args[0] == 'add':
-        add(args[1:])
-    elif args[0] == 'fetch':
-        fetch(args[1:])
-    else:
-        raise Exception("Unsupported subcommand: " + args[0])
+    with CatlogMain() as catlog_main:
+        if args[0] == 'push':
+            catlog_main.push(args[1:])
+        elif args[0] == 'init':
+            catlog_main.init(args[1:])
+        elif args[0] == 'pull':
+            catlog_main.pull(args[1:])
+        elif args[0] == 'config':
+            catlog_main.config(args[1:])
+        elif args[0] == 'status':
+            catlog_main.status(args[1:])
+        elif args[0] == 'clone':
+            catlog_main.clone(args[1:])
+        elif args[0] == 'commit':
+            catlog_main.commit(args[1:])
+        elif args[0] == 'add':
+            catlog_main.add(args[1:])
+        elif args[0] == 'fetch':
+            catlog_main.fetch(args[1:])
+        else:
+            raise Exception("Unsupported subcommand: " + args[0])
 
 if __name__ == "__main__":
     main(sys.argv[1:])
