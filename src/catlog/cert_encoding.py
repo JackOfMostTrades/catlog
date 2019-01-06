@@ -207,12 +207,12 @@ class CtLogList:
 
 
 def get_raw_leaf_by_entry_id(ct_log: str, entry_id: int) -> bytes:
-    entries = json.loads(urllib.request.urlopen(
-        "{}ct/v1/get-entries?{}".format(ct_log,
-                                        urllib.parse.urlencode({
+    url = "{}ct/v1/get-entries?{}".format(ct_log,
+                                          urllib.parse.urlencode({
                                             "start": str(entry_id),
                                             "end": str(entry_id)
-                                        }))).read())
+                                          }))
+    entries = json.loads(urllib.request.urlopen(url).read())
     leaf = base64.b64decode(entries["entries"][0]["leaf_input"])
     return leaf
 

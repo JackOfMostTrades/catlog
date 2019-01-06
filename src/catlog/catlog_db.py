@@ -100,7 +100,7 @@ class CatlogDb:
         if row is None:
             # Otherwise, look for the least-used domain
             row = self._db.execute(
-                "SELECT D.id FROM certificate_log L INNER JOIN domains D ON D.id=L.domain_id WHERE D.disabled=0 AND L.staging=? AND L.date > ? GROUP BY D.id ORDER BY COUNT(*) DESC LIMIT 1",
+                "SELECT D.id FROM certificate_log L INNER JOIN domains D ON D.id=L.domain_id WHERE D.disabled=0 AND L.staging=? AND L.date > ? GROUP BY D.id ORDER BY COUNT(*) ASC LIMIT 1",
                 (1 if staging else 0, one_week_ago,)).fetchone()
             row = self._db.execute("SELECT id,domain,tld FROM domains WHERE id=?", (row[0],)).fetchone()
         return Domain(id=row[0], domain=row[1], tld=row[2])
