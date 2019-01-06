@@ -80,7 +80,7 @@ class CatlogMain:
 
         with open(path, "rb") as f:
             file_data = f.read()
-        _push_data(file_data, self._box_db, self._le_client, file_status)
+        _push_data(file_data, False, self._box_db, self._le_client, file_status)
 
     def commit(self, cliArgs):
         if len(cliArgs) != 0:
@@ -218,6 +218,10 @@ class CatlogMain:
         # Save the reference we just used to clone this box
         self._box_db.set_box_refs(None, [log_entry])
 
+    def _format_log_entries(self, log_entries: List[catlog_pb2.LogEntryReference]):
+        return " ".join(["{}|{}".format(base64.b64encode(x.log_id).decode('utf-8'),
+                                        base64.b64encode(x.leaf_hash).decode('utf-8')) for x in log_entries])
+
     def status(self, cliArgs):
         if len(cliArgs) != 0:
             raise Exception("No arguments supported for catlog status command.")
@@ -255,19 +259,19 @@ class CatlogMain:
             print("Partially upload...")
             print("-------------------")
             for file in partially_uploaded:
-                print(file.filename)
+                print("{}\t{}".format(file.filename, self._format_log_entries(file.log_entries)))
             print()
         if len(uncommitted) > 0:
             print("Uploaded but uncommitted...")
             print("---------------------------")
             for file in uncommitted:
-                print(file.filename)
+                print("{}\t{}".format(file.filename, self._format_log_entries(file.log_entries)))
             print()
         if len(not_fetched) > 0:
             print("Available but not fetched...")
             print("----------------------------")
             for file in not_fetched:
-                print(file.filename)
+                print("{}\t{}".format(file.filename, self._format_log_entries(file.log_entries)))
 
         # FIXME: We should look for and report on files under the box_root that are completely untracked.
         return
@@ -433,6 +437,7 @@ def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReferen
 
 
 def _push_data(data: bytes,
+               staging: bool,
                box_db: Optional[BoxDb],
                client: le_client.LeClient,
                file_status: Optional[FileStatus]) -> None:
@@ -441,8 +446,8 @@ def _push_data(data: bytes,
 
     if (file_status is not None) and (file_status.upload_offset > 0) and (
             file_status.upload_fingerprint_sha256 is not None) and (len(file_status.log_entries) > 0):
-        print("Attempting to push {} bytes of data, starting at previously uploaded offset of {}...", len(data),
-              file_status.upload_offset)
+        print("Attempting to push {} bytes of data, starting at previously uploaded offset of {}...".format(len(data),
+                                                                                                            file_status.upload_offset))
 
         data = data[file_status.upload_offset:]
         log_entry_refs = []
@@ -456,7 +461,7 @@ def _push_data(data: bytes,
         print("Attempting to push {} bytes of data...".format(len(data)))
 
     while len(data) > 0:
-        domain = catlog_db.pick_domain(True)
+        domain = catlog_db.pick_domain(staging)
         bytes_per_cert = cert_encoding.get_bytes_per_cert(domain.domain)
 
         # Figure out how big to make this cert's chunk...

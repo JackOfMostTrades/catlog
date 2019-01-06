@@ -93,7 +93,7 @@ class BoxDb:
         self._db.commit()
 
     def get_all_files(self) -> List[FileStatus]:
-        files = []
+        files = {}
         for row in self._db.execute(
                 "SELECT id,filename,upload_offset,upload_complete,upload_fingerprint_sha256,committed FROM file_status"):
             file = FileStatus(id=row[0], filename=row[1])
@@ -101,8 +101,13 @@ class BoxDb:
             file.upload_complete = (row[3] != 0)
             file.upload_fingerprint_sha256 = None if row[4] is None else base64.b64decode(row[4])
             file.committed = (row[5] != 0)
-            files.append(file)
-        return files
+            files[file.id] = file
+        for row in self._db.execute("SELECT file_status_id,log_id,leaf_hash FROM file_status_ct_entry"):
+            files[row[0]].log_entries.append(catlog_pb2.LogEntryReference(
+                log_id=base64.b64decode(row[1]),
+                leaf_hash=base64.b64decode(row[2])
+            ))
+        return list(files.values())
 
     def get_all_files_for_commit(self) -> List[FileStatus]:
         files = {}
@@ -137,8 +142,8 @@ class BoxDb:
         for row in self._db.execute("SELECT log_id,leaf_hash FROM file_status_ct_entry WHERE file_status_id=?",
                                     (file.id,)):
             log_ref = catlog_pb2.LogEntryReference()
-            log_ref.log_id = row[0]
-            log_ref.leaf_hash = row[1]
+            log_ref.log_id = base64.b64decode(row[0])
+            log_ref.leaf_hash = base64.b64decode(row[1])
             file.log_entries.append(log_ref)
         return file
 
