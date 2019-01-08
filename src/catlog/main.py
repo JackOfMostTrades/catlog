@@ -214,9 +214,61 @@ class CatlogMain:
 
         self._box_root = box_root
         self._box_db = BoxDb(box_root)
-        _fetch_from(self._box_db, previous_chunk_ref, None)
+        self._fetch_from(previous_chunk_ref, None)
         # Save the reference we just used to clone this box
         self._box_db.set_box_refs(None, [log_entry])
+
+    def _fetch_from(self, previous_chunk_ref: catlog_pb2.CertificateReference, stop_at_index: Optional[int]):
+        box_name = None
+        last_box_index = 0
+
+        while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
+            ct_log_url = None
+            leaf_hash = None
+            for ref in previous_chunk_ref.log_entry:
+                ct_log_id = ref.log_id
+                leaf_hash = ref.leaf_hash
+                ct_log_url = self._ct_log_list.lookup_ct_log_by_id(ct_log_id)
+                if ct_log_url is not None:
+                    break
+
+            if ct_log_url is None:
+                raise Exception("Unable to resolve any CT logs from log IDs")
+
+            tbsCert = self._ct_log_list.get_leaf_by_hash(ct_log_url,
+                                                         base64.b64encode(leaf_hash).decode('utf-8'))
+
+            # Set last_box_index and box_name from cert's common name
+            common_name = cert_encoding.get_subject_cn(tbsCert)
+            common_name_match = re.match(r'^([0-9]+)\.(.*)', common_name)
+            if common_name_match is not None:
+                box_name = common_name_match.group(2)
+                cert_index = int(common_name_match.group(1))
+                if (stop_at_index is not None) and stop_at_index == cert_index:
+                    break
+                last_box_index = max(last_box_index, int(common_name_match.group(1)))
+
+            # Pull all the data out of the cert
+            encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert), common_name)
+            cert_data = catlog_pb2.CertificateData()
+            cert_data.ParseFromString(encoded)
+            box_chunk = cert_data.box_chunk
+            previous_chunk_ref = box_chunk.previous_chunk
+            for file_datum in box_chunk.file_data:
+                file_status = FileStatus(filename=file_datum.name)
+                file_status.upload_complete = True
+                file_status.upload_fingerprint_sha256 = file_datum.certificate_reference.fingerprint_sha256
+                file_status.committed = True
+                for entry in file_datum.certificate_reference.log_entry:
+                    file_status.log_entries.append(entry)
+                self._box_db.set_file_status(file_status)
+
+        # Save the name and box index
+        if box_name is not None:
+            self._box_db.set_config('box_name', box_name)
+        if last_box_index > 0:
+            self._box_db.set_config('last_box_index', str(last_box_index))
+
 
     def _format_log_entries(self, log_entries: List[catlog_pb2.LogEntryReference]):
         return " ".join(["{}|{}".format(base64.b64encode(x.log_id).decode('utf-8'),
@@ -302,7 +354,7 @@ class CatlogMain:
             log_entries = file_status.log_entries
             output_target = full_path
 
-        data = _pull_data(self._ct_log_list, log_entries)
+        data = self._pull_data(log_entries)
 
         if output_target is None:
             os.write(1, data)  # FIXME: Is there a python constant for stdout?
@@ -312,6 +364,50 @@ class CatlogMain:
                 os.mkdir(d)
             with open(output_target, "wb") as f:
                 f.write(data)
+
+    def _pull_data(self, log_entries: List[catlog_pb2.LogEntryReference]) -> bytes:
+        previous_chunk_ref = catlog_pb2.CertificateReference()
+        previous_chunk_ref.log_entry.extend(log_entries)
+
+        data = bytes()
+        while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
+            resolved = False
+            for log_entry in previous_chunk_ref.log_entry:
+                ct_log_id = log_entry.log_id
+                leaf_hash = log_entry.leaf_hash
+                entry_id = log_entry.entry_id
+
+                ct_log_url = self._ct_log_list.lookup_ct_log_by_id(ct_log_id)
+                if ct_log_url is None:
+                    continue
+
+                try:
+                    if entry_id != 0:
+                        tbsCert = cert_encoding.get_leaf_by_entry_id(ct_log_url, entry_id,
+                                                                     debug_file=sys.stderr)
+                    else:
+                        tbsCert = self._ct_log_list.get_leaf_by_hash(ct_log_url,
+                                                                     base64.b64encode(leaf_hash).decode(
+                                                                         'utf-8'), debug_file=sys.stderr)
+                except:
+                    print("Unable to fetch reference from {}".format(ct_log_url), file=sys.stderr)
+                    continue
+
+                encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
+                                                        cert_encoding.get_subject_cn(tbsCert))
+                cert_data = catlog_pb2.CertificateData()
+                cert_data.ParseFromString(encoded)
+                data_chunk = cert_data.data_chunk
+                previous_chunk_ref = data_chunk.previous_chunk
+                data = data_chunk.chunk + data
+
+                resolved = True
+                break
+
+            if not resolved:
+                raise Exception("Unable to resolve any CT logs from log IDs")
+
+        return data
 
     def add(self, cliArgs):
         if len(cliArgs) != 2:
@@ -326,10 +422,10 @@ class CatlogMain:
         filename = os.path.relpath(filename, os.path.dirname(self._box_root))
 
         # Sanity check that the ref is something we can fetch
-        ct_log_url = cert_encoding.lookup_ct_log_by_id(log_ref.log_id)
+        ct_log_url = self._ct_log_list.lookup_ct_log_by_id(log_ref.log_id)
         if ct_log_url is None:
             raise Exception("Unable to resolve CT log from log ID")
-        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref.leaf_hash).decode('utf-8'))
+        tbsCert = self._ct_log_list.get_leaf_by_hash(ct_log_url, base64.b64encode(log_ref.leaf_hash).decode('utf-8'))
         if tbsCert is None:
             raise Exception("Unable to lookup log ref: " + cliArgs[1])
 
@@ -379,61 +475,9 @@ class CatlogMain:
             ))
         previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
 
-        _fetch_from(self._box_db, previous_chunk_ref, last_box_index)
+        self._fetch_from(previous_chunk_ref, last_box_index)
         # Save the reference we just used to update this box
         self._box_db.set_box_refs(None, leaf_hashes)
-
-
-def _fetch_from(box_db: BoxDb, previous_chunk_ref: catlog_pb2.CertificateReference, stop_at_index: Optional[int]):
-    box_name = None
-    last_box_index = 0
-
-    while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
-        ct_log_url = None
-        leaf_hash = None
-        for ref in previous_chunk_ref.log_entry:
-            ct_log_id = ref.log_id
-            leaf_hash = ref.leaf_hash
-            ct_log_url = cert_encoding.lookup_ct_log_by_id(ct_log_id)
-            if ct_log_url is not None:
-                break
-
-        if ct_log_url is None:
-            raise Exception("Unable to resolve any CT logs from log IDs")
-
-        tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url,
-                                                 base64.b64encode(leaf_hash).decode('utf-8'))
-
-        # Set last_box_index and box_name from cert's common name
-        common_name = cert_encoding.get_subject_cn(tbsCert)
-        common_name_match = re.match(r'^([0-9]+)\.(.*)', common_name)
-        if common_name_match is not None:
-            box_name = common_name_match.group(2)
-            cert_index = int(common_name_match.group(1))
-            if (stop_at_index is not None) and stop_at_index == cert_index:
-                break
-            last_box_index = max(last_box_index, int(common_name_match.group(1)))
-
-        # Pull all the data out of the cert
-        encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert), common_name)
-        cert_data = catlog_pb2.CertificateData()
-        cert_data.ParseFromString(encoded)
-        box_chunk = cert_data.box_chunk
-        previous_chunk_ref = box_chunk.previous_chunk
-        for file_datum in box_chunk.file_data:
-            file_status = FileStatus(filename=file_datum.name)
-            file_status.upload_complete = True
-            file_status.upload_fingerprint_sha256 = file_datum.certificate_reference.fingerprint_sha256
-            file_status.committed = True
-            for entry in file_datum.certificate_reference.log_entry:
-                file_status.log_entries.append(entry)
-            box_db.set_file_status(file_status)
-
-    # Save the name and box index
-    if box_name is not None:
-        box_db.set_config('box_name', box_name)
-    if last_box_index > 0:
-        box_db.set_config('last_box_index', str(last_box_index))
 
 
 def _push_data(data: bytes,
@@ -532,41 +576,6 @@ def _parse_log_ref(ct_log_list: cert_encoding.CtLogList, s: str) -> Optional[cat
         log_ref.leaf_hash = base64.b64decode(s[45:])
         return log_ref
     return None
-
-
-def _pull_data(ct_log_list: cert_encoding.CtLogList, log_entries: List[catlog_pb2.LogEntryReference]) -> bytes:
-    previous_chunk_ref = catlog_pb2.CertificateReference()
-    previous_chunk_ref.log_entry.extend(log_entries)
-
-    data = bytes()
-    while previous_chunk_ref is not None and len(previous_chunk_ref.log_entry) > 0:
-        ct_log_url = None
-        leaf_hash = None
-        entry_id = 0
-        for log_entry in previous_chunk_ref.log_entry:
-            ct_log_id = log_entry.log_id
-            leaf_hash = log_entry.leaf_hash
-            entry_id = log_entry.entry_id
-            ct_log_url = ct_log_list.lookup_ct_log_by_id(ct_log_id)
-            if ct_log_url is not None:
-                break
-
-        if ct_log_url is None:
-            raise Exception("Unable to resolve any CT logs from log IDs")
-
-        if entry_id != 0:
-            tbsCert = cert_encoding.get_leaf_by_entry_id(ct_log_url, entry_id)
-        else:
-            tbsCert = cert_encoding.get_leaf_by_hash(ct_log_url, base64.b64encode(leaf_hash).decode('utf-8'))
-        encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
-                                                cert_encoding.get_subject_cn(tbsCert))
-        cert_data = catlog_pb2.CertificateData()
-        cert_data.ParseFromString(encoded)
-        data_chunk = cert_data.data_chunk
-        previous_chunk_ref = data_chunk.previous_chunk
-        data = data_chunk.chunk + data
-
-    return data
 
 
 def main(args):

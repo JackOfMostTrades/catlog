@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import math
 import os.path
@@ -146,26 +147,6 @@ def cert_to_leaf_hashes(certBytes: bytes, issuerCertBytes: bytes) -> List[Tuple[
     return leaf_hashes
 
 
-def get_leaf_by_hash(ct_log: str, hash: str) -> Optional[asn1crypto.x509.TbsCertificate]:
-    if (not ct_log.startswith("http://")) and (not ct_log.startswith("https://")):
-        ct_log = "https://" + ct_log
-
-    sth = json.loads(urllib.request.urlopen("{}ct/v1/get-sth".format(ct_log)).read())
-    tree_size = sth["tree_size"]
-    try:
-        proof = json.loads(urllib.request.urlopen(
-            "{}ct/v1/get-proof-by-hash?{}".format(ct_log, urllib.parse.urlencode({
-                "hash": hash,
-                "tree_size": tree_size
-            }))).read())
-    except HTTPError as e:
-        if e.code == 404:
-            return None
-        raise e
-    leaf_index = proof["leaf_index"]
-    return get_leaf_by_entry_id(ct_log, leaf_index)
-
-
 def get_subject_cn(tbsCert: asn1crypto.x509.TbsCertificate):
     return tbsCert["subject"].native["common_name"]
 
@@ -182,6 +163,7 @@ def get_sans(tbsCert: asn1crypto.x509.TbsCertificate):
 
 class CtLogList:
     def __init__(self):
+        self._sth_cache = {}
         with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "all_logs_list.json"), "r") as f:
             self._all_logs = json.loads(f.read())
 
@@ -205,23 +187,62 @@ class CtLogList:
                 return hashlib.sha256(base64.b64decode(log["key"])).digest()
         return None
 
+    def get_sth(self, ct_log, debug_file: io.IOBase = None):
+        if ct_log in self._sth_cache:
+            return self._sth_cache[ct_log]
 
-def get_raw_leaf_by_entry_id(ct_log: str, entry_id: int) -> bytes:
+        url = "{}ct/v1/get-sth".format(ct_log)
+        if debug_file is not None:
+            print("Fetching {}".format(url), file=debug_file)
+        sth = json.loads(urllib.request.urlopen(url).read())
+        self._sth_cache[ct_log] = sth
+        return sth
+
+    def get_leaf_by_hash(self, ct_log: str, hash: str, debug_file: io.IOBase = None) -> Optional[
+        asn1crypto.x509.TbsCertificate]:
+        if (not ct_log.startswith("http://")) and (not ct_log.startswith("https://")):
+            ct_log = "https://" + ct_log
+
+        sth = self.get_sth(ct_log, debug_file=debug_file)
+
+        tree_size = sth["tree_size"]
+        try:
+            url = "{}ct/v1/get-proof-by-hash?{}".format(ct_log, urllib.parse.urlencode({
+                "hash": hash,
+                "tree_size": tree_size
+            }))
+
+            if debug_file is not None:
+                print("Fetching {}".format(url), file=debug_file)
+
+            proof = json.loads(urllib.request.urlopen(url).read())
+        except HTTPError as e:
+            if e.code == 404:
+                return None
+            raise e
+        leaf_index = proof["leaf_index"]
+        return get_leaf_by_entry_id(ct_log, leaf_index, debug_file=debug_file)
+
+
+def get_raw_leaf_by_entry_id(ct_log: str, entry_id: int, debug_file: io.IOBase = None) -> bytes:
     url = "{}ct/v1/get-entries?{}".format(ct_log,
                                           urllib.parse.urlencode({
                                             "start": str(entry_id),
                                             "end": str(entry_id)
                                           }))
+    if debug_file is not None:
+        print("Fetching {}".format(url), file=debug_file)
+
     entries = json.loads(urllib.request.urlopen(url).read())
     leaf = base64.b64decode(entries["entries"][0]["leaf_input"])
     return leaf
 
 
-def get_leaf_by_entry_id(ct_log: str, entry_id: int) -> asn1crypto.x509.TbsCertificate:
+def get_leaf_by_entry_id(ct_log: str, entry_id: int, debug_file: io.IOBase = None) -> asn1crypto.x509.TbsCertificate:
     if (not ct_log.startswith("http://")) and (not ct_log.startswith("https://")):
         ct_log = "https://" + ct_log
 
-    leaf = get_raw_leaf_by_entry_id(ct_log, entry_id)
+    leaf = get_raw_leaf_by_entry_id(ct_log, entry_id, debug_file=debug_file)
     leaf_cert = ctl_parser_structures.MerkleTreeLeaf.parse(leaf).TimestampedEntry
 
     if leaf_cert.LogEntryType == "X509LogEntryType":
