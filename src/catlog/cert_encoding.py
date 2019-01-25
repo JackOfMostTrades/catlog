@@ -13,12 +13,14 @@ from asn1crypto import pem
 
 from . import ctl_parser_structures
 
-# Each label can be 63 characters long
-# The total length (including all dots) can be 253 characters.
-# https://stackoverflow.com/questions/32290167/what-is-the-maximum-length-of-a-dns-name
-# # Based on testing, the max DNS name length that the LE CA accepts is 230 characters
+# The total length (including all dots) of a DNS name can be is 253 characters. However, the max that LE
+# supports is 230 characters:
+# https://github.com/letsencrypt/boulder/blob/93ac7fbe9e77b190c5c6496b4e9d765775588963/policy/pa.go#L163
 MAX_DNS_NAME_LEN = 230
+# Max label length is 63 characters according to RFC and this enforced by LE:
+# https://github.com/letsencrypt/boulder/blob/93ac7fbe9e77b190c5c6496b4e9d765775588963/policy/pa.go#L162
 MAX_DNS_LABEL_LEN = 63
+# https://letsencrypt.org/docs/rate-limits/
 MAX_SANS_PER_CERT = 100
 
 
