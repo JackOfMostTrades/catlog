@@ -1,12 +1,12 @@
 import base64
 import os.path
 import random
-from unittest import TestCase
+import unittest
 
-from . import cert_encoding
+from catlog import cert_encoding
 
 
-class TestCertEncoding(TestCase):
+class TestCertEncoding(unittest.TestCase):
     def test_domains_encode_decode(self):
         input = b"Hello, World!" * 100
         domains = cert_encoding.data_to_domains(input, "x.example.com", "x.example.com")
@@ -51,10 +51,9 @@ class TestCertEncoding(TestCase):
         assert (leaf_hashes[1] == (base64.b64decode("VhQGmi/XwuzT9eG9RLI+x0Z2ubyZEVzA75SYVdaJ0N0="),
                                    base64.b64decode("iJNJZXHlf4Ja1CdO4x6cnKT+alLH442DptAEles1hAI=")))
 
+    @unittest.skipIf("OFFLINE" in os.environ, "Not running online test")
     def test_get_leaf_by_hash(self):
-        if "OFFLINE" in os.environ:
-            self.skipTest("online-test")
-        leaf = cert_encoding.get_leaf_by_hash("https://ct.googleapis.com/skydiver/",
+        leaf = cert_encoding.CtLogList().get_leaf_by_hash("https://ct.googleapis.com/skydiver/",
                                               "s6xEbpd/yMb71ZPlk+pQwIOPpL0Vy2Kb1p3A1SXRYmw=")
         sans = cert_encoding.get_sans(leaf)
         assert ("apple.com" in sans)

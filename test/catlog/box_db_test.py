@@ -3,7 +3,8 @@ import shutil
 import tempfile
 from unittest import TestCase
 
-from . import box_db
+from catlog import box_db
+from catlog import catlog_pb2
 
 
 class TestBoxDb(TestCase):
@@ -23,10 +24,16 @@ class TestBoxDb(TestCase):
 
     def test_set_and_get_box_refs(self):
         self.box_db.set_box_refs(base64.b64decode("rsBwZF/lPuOzdjBZN2E08FjMM3JHyXit0Xi2zN+wAZ8="),
-                                 [(base64.b64decode("ypeBEsobvcr6wjGzmiPcTaeG7/gUfE5yuYB3ha/uSLs="),
-                                   base64.b64decode("PiPoFgA5WUoziU9lZOGxNIu9egCI1CxKy3PurtWcAJ0=")),
-                                  (base64.b64decode("Ln0sA6lQeuJl7PW1NWiFpTOTogKdJBOUmXJloaJa78Y="),
-                                   base64.b64decode("GKw+c0PwFokMUQ6T+TUmEWnZ4/VlQ2Qpgw+vCTT0+OQ="))])
+                                 [
+                                     catlog_pb2.LogEntryReference(
+                                         log_id=base64.b64decode("ypeBEsobvcr6wjGzmiPcTaeG7/gUfE5yuYB3ha/uSLs="),
+                                         leaf_hash=base64.b64decode("PiPoFgA5WUoziU9lZOGxNIu9egCI1CxKy3PurtWcAJ0="),
+                                     ),
+                                     catlog_pb2.LogEntryReference(
+                                         log_id=base64.b64decode("Ln0sA6lQeuJl7PW1NWiFpTOTogKdJBOUmXJloaJa78Y="),
+                                         leaf_hash=base64.b64decode("GKw+c0PwFokMUQ6T+TUmEWnZ4/VlQ2Qpgw+vCTT0+OQ=")
+                                     )
+                                 ])
         self.assertEqual(base64.b64decode("rsBwZF/lPuOzdjBZN2E08FjMM3JHyXit0Xi2zN+wAZ8="),
                          self.box_db.get_box_fingerprint_sha256())
         box_refs = self.box_db.get_box_refs()

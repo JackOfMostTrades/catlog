@@ -245,6 +245,10 @@ def get_leaf_by_entry_id(ct_log: str, entry_id: int, debug_file: io.IOBase = Non
         ct_log = "https://" + ct_log
 
     leaf = get_raw_leaf_by_entry_id(ct_log, entry_id, debug_file=debug_file)
+    return get_tbs_certificate_from_leaf_bytes(leaf)
+
+
+def get_tbs_certificate_from_leaf_bytes(leaf: bytes) -> asn1crypto.x509.TbsCertificate:
     leaf_cert = ctl_parser_structures.MerkleTreeLeaf.parse(leaf).TimestampedEntry
 
     if leaf_cert.LogEntryType == "X509LogEntryType":

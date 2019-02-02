@@ -47,6 +47,12 @@ class BoxDb:
     def close(self):
         self._db.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
     def get_config(self, key: str) -> Optional[str]:
         row = self._db.execute("SELECT value FROM box_config WHERE key=?", (key,)).fetchone()
         if row is None:
@@ -156,7 +162,8 @@ class BoxDb:
                 (file.filename,
                  file.upload_offset,
                  1 if file.upload_complete else 0,
-                 base64.b64encode(file.upload_fingerprint_sha256).decode('utf-8'),
+                 None if file.upload_fingerprint_sha256 is None else base64.b64encode(
+                     file.upload_fingerprint_sha256).decode('utf-8'),
                  1 if file.committed else 0,))
             id = cursor.lastrowid
         else:
@@ -165,7 +172,8 @@ class BoxDb:
                 "UPDATE file_status SET upload_offset=?, upload_complete=?, upload_fingerprint_sha256=?, committed=? WHERE id=?",
                 (file.upload_offset,
                  1 if file.upload_complete else 0,
-                 base64.b64encode(file.upload_fingerprint_sha256).decode('utf-8'),
+                 None if file.upload_fingerprint_sha256 is None else base64.b64encode(
+                     file.upload_fingerprint_sha256).decode('utf-8'),
                  1 if file.committed else 0,
                  id,))
         cursor.execute("DELETE FROM file_status_ct_entry WHERE file_status_id=?", (id,))

@@ -8,16 +8,24 @@ from typing import List, Optional
 
 from . import catlog_pb2
 from . import cert_encoding
-from . import crt_sh
 from . import le_client
 from .box_db import discover_box_root, BoxDb, FileStatus
 from .catlog_db import CatlogDb
 from .config_cmd import config_cmd
+from .crt_sh import CrtSh
 
 
 class CatlogMain:
-    def __init__(self):
-        self._catlog_db = CatlogDb()
+    def __init__(self,
+                 catlog_db: CatlogDb = None,
+                 ct_log_list: cert_encoding.CtLogList = None,
+                 le_client: le_client.LeClient = None,
+                 crt_sh: CrtSh = None):
+        if catlog_db is None:
+            self._catlog_db = CatlogDb()
+        else:
+            self._catlog_db = catlog_db
+
         box_root = discover_box_root()
         if box_root is not None:
             self._box_root = box_root
@@ -25,8 +33,21 @@ class CatlogMain:
         else:
             self._box_root = None
             self._box_db = None
-        self._le_client = le_client.LeClient(False, self._catlog_db)
-        self._ct_log_list = cert_encoding.CtLogList()
+
+        if le_client is None:
+            self._le_client = le_client.LeClient(False, self._catlog_db)
+        else:
+            self._le_client = le_client
+
+        if ct_log_list is None:
+            self._ct_log_list = cert_encoding.CtLogList()
+        else:
+            self._ct_log_list = ct_log_list
+
+        if crt_sh is None:
+            self._crt_sh = CrtSh()
+        else:
+            self._crt_sh = crt_sh
 
     def __enter__(self):
         return self
@@ -80,7 +101,7 @@ class CatlogMain:
 
         with open(path, "rb") as f:
             file_data = f.read()
-        _push_data(file_data, False, self._box_db, self._le_client, file_status)
+        _push_data(self._catlog_db, file_data, False, self._box_db, self._le_client, file_status)
 
     def commit(self, cliArgs):
         if len(cliArgs) != 0:
@@ -167,7 +188,7 @@ class CatlogMain:
 
             # Update the box_db, marking the new box refs and committed files
             self._box_db.mark_files_committed([x.name for x in file_data[:num_files]])
-            self._box_db.set_box_refs(fingerprint_sha256, leaf_hashes)
+            self._box_db.set_box_refs(fingerprint_sha256, log_entry_refs)
             self._box_db.set_config('last_box_index', str(box_index + 1))
             box_index += 1
 
@@ -181,15 +202,14 @@ class CatlogMain:
             raise Exception("Expected exactly only argument to `catlog clone`")
         log_entry = _parse_log_ref(self._ct_log_list, cliArgs[0])
         if log_entry is not None:
-            previous_chunk_ref = catlog_pb2.CertificateReference(
-                log_entry=[log_entry]
-            )
+            log_entry_refs = [log_entry]
+            previous_chunk_ref = catlog_pb2.CertificateReference(log_entry=log_entry_refs)
         else:
             last_index = 0
             found_ids = []
             while True:
                 index = last_index + 1
-                ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(index, cliArgs[0]))
+                ids = self._crt_sh.get_cert_ids_by_cn("{}.{}".format(index, cliArgs[0]))
                 if len(ids) == 0:
                     break
                 last_index = index
@@ -197,8 +217,8 @@ class CatlogMain:
             if len(found_ids) == 0:
                 raise Exception("Invalid certificate reference: " + cliArgs[0])
             log_entry_refs = []
-            for id in ids:
-                for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
+            for id in found_ids:
+                for leaf_hash in self._crt_sh.get_leaf_hashes_by_cert_id(id):
                     log_entry_refs.append(catlog_pb2.LogEntryReference(
                         log_id=leaf_hash[0],
                         leaf_hash=leaf_hash[1]
@@ -216,7 +236,7 @@ class CatlogMain:
         self._box_db = BoxDb(box_root)
         self._fetch_from(previous_chunk_ref, None)
         # Save the reference we just used to clone this box
-        self._box_db.set_box_refs(None, [log_entry])
+        self._box_db.set_box_refs(None, log_entry_refs)
 
     def _fetch_from(self, previous_chunk_ref: catlog_pb2.CertificateReference, stop_at_index: Optional[int]):
         box_name = None
@@ -329,7 +349,7 @@ class CatlogMain:
         return
 
     def config(self, cliArgs):
-        config_cmd(cliArgs)
+        config_cmd(self._catlog_db, cliArgs)
 
     def pull(self, cliArgs):
         if len(cliArgs) != 1:
@@ -357,7 +377,7 @@ class CatlogMain:
         data = self._pull_data(log_entries)
 
         if output_target is None:
-            os.write(1, data)  # FIXME: Is there a python constant for stdout?
+            sys.stdout.write(data)
         else:
             d = os.path.dirname(output_target)
             if not os.path.isdir(d):
@@ -450,7 +470,7 @@ class CatlogMain:
         found_cert_ids = None
         while True:
             next_id = max_found_id + 1
-            cert_ids = crt_sh.get_cert_ids_by_cn("{}.{}".format(next_id, box_name))
+            cert_ids = self._crt_sh.get_cert_ids_by_cn("{}.{}".format(next_id, box_name))
             if len(cert_ids) == 0:
                 break
             max_found_id = next_id
@@ -463,7 +483,7 @@ class CatlogMain:
 
         leaf_hashes = []
         for id in found_cert_ids:
-            for leaf_hash in crt_sh.get_leaf_hashes_by_cert_id(id):
+            for leaf_hash in self._crt_sh.get_leaf_hashes_by_cert_id(id):
                 leaf_hashes.append(leaf_hash)
         if len(leaf_hashes) == 0:
             raise Exception("Unable to resolve leaf hashes from crt.sh")
@@ -480,12 +500,12 @@ class CatlogMain:
         self._box_db.set_box_refs(None, leaf_hashes)
 
 
-def _push_data(data: bytes,
+def _push_data(catlog_db: CatlogDb,
+               data: bytes,
                staging: bool,
                box_db: Optional[BoxDb],
                client: le_client.LeClient,
                file_status: Optional[FileStatus]) -> None:
-    catlog_db = CatlogDb()
     previous_chunk_ref = None
 
     if (file_status is not None) and (file_status.upload_offset > 0) and (

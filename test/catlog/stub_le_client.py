@@ -6,17 +6,18 @@ from unittest import TestCase
 import asn1crypto.core
 from OpenSSL import crypto
 
-from . import cert_encoding
-from . import ctl_parser_structures
-from . import le_client
-from . import stub_ct_log
-from .catlog_db import CatlogDb
+from catlog import cert_encoding
+from catlog import ctl_parser_structures
+from catlog import le_client
+from catlog import stub_crt_sh
+from catlog import stub_ct_log
+from catlog.catlog_db import CatlogDb
 
 
 class StubLeClient(le_client.LeClient):
     def __init__(self, ct_log: stub_ct_log.StubCtLog = None):
         catlog_db = CatlogDb(path=":memory:")
-        super().__init__(catlog_db)
+        super().__init__(False, catlog_db)
 
         self.ct_log = ct_log
 
@@ -93,7 +94,8 @@ class StubLeClient(le_client.LeClient):
 
 class TestStubLeClient(TestCase):
     def test_mint_cert(self):
-        ct_log = stub_ct_log.StubCtLog()
+        ct_log_list = stub_ct_log.StubCtLogList()
+        ct_log = stub_ct_log.StubCtLog(ct_log_list, stub_crt_sh.StubCrtSh())
         try:
             domain = le_client.Domain(
                 id=0, domain="foo.bar"
@@ -105,8 +107,8 @@ class TestStubLeClient(TestCase):
             leaf_hashes = cert_encoding.cert_to_leaf_hashes(cert, issuer)
             assert (len(leaf_hashes) > 0)
             for leaf_hash in leaf_hashes:
-                tbsCert = cert_encoding.get_leaf_by_hash(
-                    cert_encoding.lookup_ct_log_by_id(leaf_hash[0]),
+                tbsCert = ct_log_list.get_leaf_by_hash(
+                    ct_log_list.lookup_ct_log_by_id(leaf_hash[0]),
                     base64.b64encode(leaf_hash[1]).decode('utf-8'))
                 encoded = cert_encoding.domains_to_data(cert_encoding.get_sans(tbsCert),
                                                         cert_encoding.get_subject_cn(tbsCert))

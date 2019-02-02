@@ -1,8 +1,8 @@
 import base64
 from unittest import TestCase
 
-from . import catlog_db
-from . import le_client
+from catlog import catlog_db
+from catlog import le_client
 
 
 class TestLeClient(TestCase):

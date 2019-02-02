@@ -3,11 +3,16 @@ import functools
 import hashlib
 import http
 import http.server
+import io
 import json
 import threading
 import urllib.parse
+from typing import Optional
 
-from . import cert_encoding
+import asn1crypto.x509
+
+from catlog import cert_encoding
+from catlog.stub_crt_sh import StubCrtSh
 
 STUB_KEY = base64.b64encode(b"key-doesnt-matter").decode('utf-8')
 STUB_KEY_ID = hashlib.sha256(base64.b64decode(STUB_KEY)).digest()
@@ -65,22 +70,48 @@ class _StubCtHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-class StubCtLog:
+class StubCtLogList(cert_encoding.CtLogList):
     def __init__(self):
-        self.hashes = {}
-        self.entries = []
+        self._log_url = None
+        self._leaf_by_hash = {}
+        pass
 
+    def lookup_ct_log_by_id(self, log_id: bytes) -> Optional[str]:
+        if log_id == STUB_KEY_ID:
+            return self._log_url
+        return None
+
+    def lookup_ct_log_id_by_url(self, ct_log_url: str) -> Optional[bytes]:
+        if ct_log_url == self._log_url:
+            return STUB_KEY_ID
+        return None
+
+    def get_sth(self, ct_log, debug_file: io.IOBase = None):
+        return None
+
+    def get_leaf_by_hash(self, ct_log: str, hash: str, debug_file: io.IOBase = None) -> Optional[
+        asn1crypto.x509.TbsCertificate]:
+        if ct_log != self._log_url:
+            return None
+        leaf = self._leaf_by_hash[hash]
+        return cert_encoding.get_tbs_certificate_from_leaf_bytes(leaf)
+
+    def set_log_url(self, log_url: str):
+        self._log_url = log_url
+
+    def add_leaf(self, leaf: bytes, hash: str):
+        self._leaf_by_hash[hash] = leaf
+
+
+class StubCtLog:
+    def __init__(self, ct_log_list: StubCtLogList, crt_sh: StubCrtSh):
         server_address = ('127.0.0.1', 0)
         self._httpd = http.server.HTTPServer(server_address, functools.partial(_StubCtHTTPRequestHandler, ct_log=self))
         threading.Thread(target=self._httpd.serve_forever).start()
 
-        # Inject into all_logs. First load all logs...
-        cert_encoding.get_all_logs()
-        # Then inject this into the logs
-        cert_encoding._all_logs["logs"].append({
-            "url": "http://localhost:{}/".format(self._httpd.server_port),
-            "key": STUB_KEY
-        })
+        self._ct_log_list = ct_log_list
+        ct_log_list.set_log_url("http://localhost:{}/".format(self._httpd.server_port))
+        self._crt_sh = crt_sh
 
     def port(self):
         return self._httpd.server_port
@@ -89,10 +120,11 @@ class StubCtLog:
         leaves = cert_encoding.cert_to_merkle_tree_leaves(cert, issuer)
         for leaf in leaves:
             if leaf[0] == STUB_KEY_ID:
-                index = len(self.entries)
-                self.entries.append(leaf[1])
                 leaf_hash = hashlib.sha256(b"\x00" + leaf[1]).digest()
-                self.hashes[base64.b64encode(leaf_hash).decode('utf-8')] = index
+                hash = base64.b64encode(leaf_hash).decode('utf-8')
+                self._ct_log_list.add_leaf(leaf[1], hash)
+                self._crt_sh.submit_cert(leaf[0], leaf_hash, cert_encoding.get_subject_cn(
+                    cert_encoding.get_tbs_certificate_from_leaf_bytes(leaf[1])))
 
     def stop(self):
         self._httpd.shutdown()
