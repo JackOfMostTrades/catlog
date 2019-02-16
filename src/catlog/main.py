@@ -8,18 +8,18 @@ from typing import List, Optional
 
 from . import catlog_pb2
 from . import cert_encoding
-from . import le_client
 from .box_db import discover_box_root, BoxDb, FileStatus
 from .catlog_db import CatlogDb
 from .config_cmd import config_cmd
 from .crt_sh import CrtSh
+from .le_client import LeClient
 
 
 class CatlogMain:
     def __init__(self,
                  catlog_db: CatlogDb = None,
                  ct_log_list: cert_encoding.CtLogList = None,
-                 le_client: le_client.LeClient = None,
+                 le_client: LeClient = None,
                  crt_sh: CrtSh = None):
         if catlog_db is None:
             self._catlog_db = CatlogDb()
@@ -35,7 +35,7 @@ class CatlogMain:
             self._box_db = None
 
         if le_client is None:
-            self._le_client = le_client.LeClient(False, self._catlog_db)
+            self._le_client = LeClient(False, self._catlog_db)
         else:
             self._le_client = le_client
 
@@ -377,7 +377,8 @@ class CatlogMain:
         data = self._pull_data(log_entries)
 
         if output_target is None:
-            sys.stdout.write(data)
+            fp = os.fdopen(sys.stdout.fileno(), 'wb')
+            fp.write(data)
         else:
             d = os.path.dirname(output_target)
             if not os.path.isdir(d):
@@ -504,7 +505,7 @@ def _push_data(catlog_db: CatlogDb,
                data: bytes,
                staging: bool,
                box_db: Optional[BoxDb],
-               client: le_client.LeClient,
+               client: LeClient,
                file_status: Optional[FileStatus]) -> None:
     previous_chunk_ref = None
 
