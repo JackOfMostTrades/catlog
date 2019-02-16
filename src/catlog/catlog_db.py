@@ -7,6 +7,10 @@ from typing import Dict, List, Tuple
 
 home = os.path.expanduser("~")
 
+# The maximum number of Certificates per Registered Domain according to Let's Encrypt rate limits
+# https://letsencrypt.org/docs/rate-limits/
+DOMAIN_USAGE_LIMIT = 50
+
 
 class Domain:
     def __init__(self, id=None, domain=None, tld=None):
@@ -100,9 +104,13 @@ class CatlogDb:
         if row is None:
             # Otherwise, look for the least-used domain
             row = self._db.execute(
-                "SELECT D.id FROM certificate_log L INNER JOIN domains D ON D.id=L.domain_id WHERE D.disabled=0 AND L.staging=? AND L.date > ? GROUP BY D.id ORDER BY COUNT(*) ASC LIMIT 1",
+                "SELECT D.id,COUNT(*) FROM certificate_log L INNER JOIN domains D ON D.id=L.domain_id WHERE D.disabled=0 AND L.staging=? AND L.date > ? GROUP BY D.id ORDER BY COUNT(*) ASC LIMIT 1",
                 (1 if staging else 0, one_week_ago,)).fetchone()
-            row = self._db.execute("SELECT id,domain,tld FROM domains WHERE id=?", (row[0],)).fetchone()
+            domain_id = row[0]
+            domain_usage = row[1]
+            if domain_usage >= DOMAIN_USAGE_LIMIT:
+                raise Exception("No domains available within domain usage rate limit!")
+            row = self._db.execute("SELECT id,domain,tld FROM domains WHERE id=?", (domain_id,)).fetchone()
         return Domain(id=row[0], domain=row[1], tld=row[2])
 
     def add_certificate_log(self, domain: Domain, fingerprint_sha256: bytes, staging: bool,
