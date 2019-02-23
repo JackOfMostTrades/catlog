@@ -148,7 +148,7 @@ class CatlogMain:
             )
 
         while len(file_data) > 0:
-            domain = self._catlog_db.pick_domain(False)
+            domain = self._catlog_db.pick_domain_for_prefix(box_name)
             bytes_per_cert = cert_encoding.get_bytes_per_cert(domain.domain)
 
             # Figure out how big to make this cert's chunk...

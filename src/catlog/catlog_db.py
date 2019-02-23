@@ -3,7 +3,7 @@ import os
 import os.path
 import sqlite3
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 home = os.path.expanduser("~")
 
@@ -111,6 +111,14 @@ class CatlogDb:
             if domain_usage >= DOMAIN_USAGE_LIMIT:
                 raise Exception("No domains available within domain usage rate limit!")
             row = self._db.execute("SELECT id,domain,tld FROM domains WHERE id=?", (domain_id,)).fetchone()
+        return Domain(id=row[0], domain=row[1], tld=row[2])
+
+    def pick_domain_for_prefix(self, prefix: str) -> Optional[Domain]:
+        row = self._db.execute(
+            "SELECT id,domain,tld FROM domains WHERE disabled=0 AND LIKE('%' || tld, ?) LIMIT 1",
+            (prefix,)).fetchone()
+        if row is None:
+            return None
         return Domain(id=row[0], domain=row[1], tld=row[2])
 
     def add_certificate_log(self, domain: Domain, fingerprint_sha256: bytes, staging: bool,
