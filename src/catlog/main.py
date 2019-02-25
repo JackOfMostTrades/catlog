@@ -45,7 +45,7 @@ class CatlogMain:
             self._ct_log_list = ct_log_list
 
         if crt_sh is None:
-            self._crt_sh = CrtSh()
+            self._crt_sh = CrtSh(ct_log_list=self._ct_log_list)
         else:
             self._crt_sh = crt_sh
 
