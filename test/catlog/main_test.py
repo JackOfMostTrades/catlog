@@ -54,13 +54,10 @@ class TestMain(TestCase):
             log_entry = files[0].log_entries[0]
 
         with self.createMain() as main:
-            stdout = sys.stdout
-            captured = BytesIO()
-            sys.stdout = captured
-            main.pull([base64.b64encode(log_entry.log_id).decode('utf-8') + "|" + base64.b64encode(
-                log_entry.leaf_hash).decode('utf-8')])
-            sys.stdout = stdout
-            assert (input == captured.getvalue())
+            with StdOutCapture() as capture:
+                main.pull([base64.b64encode(log_entry.log_id).decode('utf-8') + "|" + base64.b64encode(
+                    log_entry.leaf_hash).decode('utf-8')])
+                assert (input == capture.get_capture())
 
     def test_push_and_pull_small_data(self):
         input = bytes(random.getrandbits(8) for _ in range(1024))
@@ -93,3 +90,25 @@ class TestMain(TestCase):
             data = f.read()
 
         assert (input == data)
+
+
+class StdOutCapture:
+    def __init__(self):
+        pass
+
+    def __enter__(self):
+        self._old_stdout = sys.stdout
+        self._new_stdout = BytesIO()
+        sys.stdout = self._new_stdout
+        return self
+
+    def close(self):
+        if self._old_stdout is not None:
+            sys.stdout = self._old_stdout
+            self._old_stdout = None
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
+    def get_capture(self):
+        return self._new_stdout.getvalue()

@@ -4,6 +4,7 @@ import os
 import os.path
 import re
 import sys
+from io import BytesIO
 from typing import List, Optional
 
 from . import catlog_pb2
@@ -377,8 +378,11 @@ class CatlogMain:
         data = self._pull_data(log_entries)
 
         if output_target is None:
-            fp = os.fdopen(sys.stdout.fileno(), 'wb')
-            fp.write(data)
+            if isinstance(sys.stdout, BytesIO):
+                sys.stdout.write(data)
+            else:
+                fp = os.fdopen(sys.stdout.fileno(), 'wb')
+                fp.write(data)
         else:
             d = os.path.dirname(output_target)
             if not os.path.isdir(d):
