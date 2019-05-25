@@ -1,0 +1,19 @@
+version: 2.1
+
+jobs:
+  test:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - checkout
+      - run:
+          command: |
+            virtualenv venv
+            source venv/bin/activate
+            pip install pytest -r requirements.txt -r test/test_requirements.txt
+            PYTHONPATH=src:test python -m pytest
+
+workflows:
+  test:
+    jobs:
+      - test
