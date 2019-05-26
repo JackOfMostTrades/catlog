@@ -1,3 +1,5 @@
+[![CircleCI](https://circleci.com/gh/JackOfMostTrades/catlog.svg?style=svg)](https://circleci.com/gh/JackOfMostTrades/catlog)
+
 CaTLog
 ======
 _For putting cats in your CTLog_
