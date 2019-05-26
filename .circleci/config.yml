@@ -6,12 +6,20 @@ jobs:
       - image: circleci/python:3.7
     steps:
       - checkout
+      - restore_cache:
+          keys:
+            - v1-venv-cache-{{ checksum "requirements.txt" }}-{{ checksum "test/test_requirements.txt" }}
+            - v1-venv-cache-{{ checksum "requirements.txt" }}-
       - run:
           command: |
-            virtualenv venv
+            [[ ! -e venv ]] && virtualenv venv
             source venv/bin/activate
             pip install pytest -r requirements.txt -r test/test_requirements.txt
-            PYTHONPATH=src:test python -m pytest
+      - save_cache:
+          paths:
+            - venv
+          key: v1-venv-cache-{{ checksum "requirements.txt" }}-{{ checksum "test/test_requirements.txt" }}
+      - run: source venv/bin/activate && PYTHONPATH=src:test python -m pytest
 
 workflows:
   test:
