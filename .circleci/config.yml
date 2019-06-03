@@ -19,7 +19,15 @@ jobs:
           paths:
             - venv
           key: v1-venv-cache-{{ checksum "requirements.txt" }}-{{ checksum "test/test_requirements.txt" }}
-      - run: source venv/bin/activate && PYTHONPATH=src:test python -m pytest
+      - run:
+          command: |
+            source venv/bin/activate
+            mkdir test-reports
+            PYTHONPATH=src:test python -m pytest --junitxml=test-reports/junit.xml
+      - store_test_results:
+          path: test-reports
+      - store_artifacts:
+          path: test-reports
 
 workflows:
   test:
